@@ -337,7 +337,7 @@ export class WebChatAdapter {
     if (isMainChat && this.toolScope?.originalMessage) allMessages = allMessages.map(message => this.toolScope.originalMessage(baseSessionId, message))
     // Auxiliary producers (session-title, compaction) must not touch the user's
     // web conversation: give them their own conversation key, and never inject
-    // tools or the context attachment there.
+    // tools or the context notice there.
     const sessionId = isMainChat ? baseSessionId : `${baseSessionId}#${purpose}`
     const state = this.#state(sessionId)
 
@@ -399,7 +399,7 @@ export class WebChatAdapter {
         : userKeys.length && userKeys.at(-1) !== state.sentUserKeys.at(-1) ? userMessages.slice(-1) : []
     }
     // Auxiliary tasks need their system instructions and complete input on
-    // every request; they do not receive the main chat's context attachment.
+    // every request; they do not receive the main chat's context notice.
     let prompt = nativeContext ? delta.map(message => rawMessageText(message)).filter(Boolean).join('\n\n')
       : flattenMessages(isMainChat ? (delta.length > 0 ? delta : userMessages.slice(-1)) : allMessages)
     const attachmentMessages = nativeContext ? delta : delta.length > 0 ? delta : userMessages.slice(-1)
@@ -450,16 +450,11 @@ export class WebChatAdapter {
     const contextChanged = Boolean(contextReference && !reuseContext)
 
     // Compatibility routes keep their existing text-file transport for bulky
-    // instructions and history. Native ChatGPT carries only a tiny MCP notice,
-    // leaving the visible composer text equal to the genuine user prompt.
-    const contextAttachment = since => ({
-      name: 'dsh-context.txt',
-      content: contextNotice(contextReference, since),
-    })
+    // instructions and history. Native ChatGPT carries the tiny MCP notice in
+    // the composer text, so refreshing DSH context never consumes file quota.
     const previousDelivered = Boolean(previousContextReference && this.contextStore.isDelivered(previousContextReference.context_id))
     const contextBase = contextChanged && previousDelivered ? previousContextReference.context_id : null
-    let attachment = contextReference && !this.contextStore.isDelivered(contextReference.context_id)
-      ? contextAttachment(contextBase) : null
+    let attachment = null
     if (isMainChat && !nativeContext) {
       const background = [
         !state.contextDelivered ? flattenMessages(allMessages.filter((message) => message.role === 'system')) : '',
@@ -475,11 +470,18 @@ export class WebChatAdapter {
         }
       }
     }
-    const message = contextReference
+    const continuationMessage = contextReference
       ? prompt || (contextChanged
         ? 'DSH 上下文已更新。请继续上一任务，已经完成的工具操作不要重复执行。'
         : '请继续上一任务，已经完成的工具操作不要重复执行。')
       : prompt
+    const contextMessage = since => [
+      contextNotice(contextReference, since),
+      continuationMessage,
+    ].filter(Boolean).join('\n\n')
+    const message = contextReference && !this.contextStore.isDelivered(contextReference.context_id)
+      ? contextMessage(contextBase)
+      : continuationMessage
 
     let reply = ''
     let streamedText = ''
@@ -529,8 +531,7 @@ export class WebChatAdapter {
             const freshConversation = info.newConversation || info.reset
             const needsContext = freshConversation || !this.contextStore.isDelivered(contextReference.context_id)
             return {
-              text: message,
-              attachment: needsContext ? contextAttachment(freshConversation ? null : contextBase) : null,
+              text: needsContext ? contextMessage(freshConversation ? null : contextBase) : continuationMessage,
               // A fresh web conversation has none of the earlier user uploads,
               // even when this attempt contains only a context continuation.
               attachments: freshConversation
