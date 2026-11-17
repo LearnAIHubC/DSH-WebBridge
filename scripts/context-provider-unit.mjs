@@ -114,13 +114,13 @@ test('context-only continuation carries updated rules without replaying the old 
   assert.equal(sent[1].args.since_context_id, sent[0].args.context_id)
   assert.equal(sent[1].pages[0].mode, 'delta')
   assert.deepEqual(sent[1].data.messages.map(entry => entry.message), [update])
-  assert.match(sent[1].message, /DSH 上下文已更新。请继续上一任务/)
+  assert.match(sent[1].message, /DSH 上下文已更新。请应用增量规则/)
   assert.doesNotMatch(sent[1].message, /请先调用|用户：修改一个文件/)
   assert.match(sent[1].message, /dsh_get_context/)
   assert.equal(sent[1].attachment, null)
 })
 
-test('ordinary turns and checkpoint-only continuations do not announce a context update', async () => {
+test('a finished native task is not sent to the browser again for repeated host notices', async () => {
   const { adapter, sent } = fixture()
   const initial = [user('task', '第一个问题')]
   await collect(adapter, { sessionId: 'main', messages: initial })
@@ -131,17 +131,17 @@ test('ordinary turns and checkpoint-only continuations do not announce a context
     { id: 'tool', role: 'user', source: { kind: 'tool', callId: 'call-1' }, content: [{ type: 'text', text: '工具结果' }] },
     { id: 'checkpoint', role: 'user', source: { kind: 'webbridge-context-checkpoint' }, content: [{ type: 'text', text: 'continue' }] },
   ]
-  await collect(adapter, { sessionId: 'main', messages: history })
-  assert.equal(sent[1].message, '请继续上一任务，已经完成的工具操作不要重复执行。')
-  assert.doesNotMatch(sent[1].message, /上下文已更新|dsh_get_context/)
-  assert.equal(sent[1].attachment, null)
-  assert.equal(sent[1].args, undefined)
+  for (let attempt = 0; attempt < 5; attempt++) {
+    const ended = await collect(adapter, { sessionId: 'main', messages: history })
+    assert.equal(sent.length, 1, 'a historical notice must not start another browser round trip')
+    assert.equal(ended.at(-1).reason.kind, 'stop')
+  }
   assert.equal(adapter.sessionState.get('main').contextReference.context_id, firstContextId)
 
   await collect(adapter, { sessionId: 'main', messages: [...history, user('next', '第二个问题')] })
-  assert.equal(sent[2].message, '第二个问题')
-  assert.doesNotMatch(sent[2].message, /请先调用|用户：/)
-  assert.equal(sent[2].attachment, null)
+  assert.equal(sent[1].message, '第二个问题')
+  assert.doesNotMatch(sent[1].message, /请先调用|用户：/)
+  assert.equal(sent[1].attachment, null)
   assert.equal(adapter.sessionState.get('main').contextReference.context_id, firstContextId)
 })
 
@@ -164,8 +164,7 @@ test('identical injected content with new message IDs and repeated notices does 
     toolHistory: { tools: [tool], updates: [{ messageId: 'random-update-id', additions: [tool] }] },
   })
   assert.equal(adapter.sessionState.get('main').contextReference.context_id, reference)
-  assert.equal(sent[1].args, undefined)
-  assert.doesNotMatch(sent[1].message, /上下文已更新|dsh_get_context/)
+  assert.equal(sent.length, 1)
 })
 
 test('a scoped rule changing A to B and back to A still refreshes with deltas', async () => {
@@ -189,6 +188,8 @@ test('a new conversation loads full context and restores earlier user attachment
   const upload = { ...user('file', '请分析这个文件'), content: [{ type: 'text', text: '请分析这个文件' }, { type: 'file', attachment: { attachmentId: 'file-id', name: 'design.txt' } }] }
   await collect(adapter, { sessionId: 'main', messages: [upload] })
   await collect(adapter, { sessionId: 'main', messages: [upload, user('followup', '继续分析')] })
+  adapter.session.newChat = async () => ({ conversation: { newConversation: true } })
+  await adapter.syncSession('main')
   await collect(adapter, { sessionId: 'main', messages: [upload, user('followup', '继续分析')] })
   assert.deepEqual(sent[0].attachments, [{ path: '/attachments/file-id', name: 'design.txt' }])
   assert.equal(sent[0].attachment, null)

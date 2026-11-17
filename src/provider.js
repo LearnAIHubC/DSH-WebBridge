@@ -451,6 +451,17 @@ export class WebChatAdapter {
       : null
     const contextChanged = Boolean(contextReference && !reuseContext)
 
+    // Native MCP tools already ran inside the completed web reply. A host
+    // notice without new user input or effective context is not another task.
+    if (nativeContext && state.bootstrapped && !prompt.trim() && !attachments.length && !contextChanged) {
+      const text = '没有新的任务或上下文变更，本轮已结束。'
+      yield { type: 'block-start', index: 0, blockType: 'text' }
+      yield { type: 'text-delta', index: 0, text }
+      yield { type: 'block-end', index: 0, block: { type: 'text', text } }
+      yield { type: 'finish', reason: { kind: 'stop' } }
+      return
+    }
+
     // Compatibility routes keep their existing text-file transport for bulky
     // instructions and history. Native ChatGPT carries the tiny MCP notice in
     // the composer text, so refreshing DSH context never consumes file quota.
@@ -474,8 +485,8 @@ export class WebChatAdapter {
     }
     const continuationMessage = contextReference
       ? prompt || (contextChanged
-        ? 'DSH 上下文已更新。请继续上一任务，已经完成的工具操作不要重复执行。'
-        : '请继续上一任务，已经完成的工具操作不要重复执行。')
+        ? 'DSH 上下文已更新。请应用增量规则，只继续尚未完成的步骤；任务已经完成时确认更新后结束。'
+        : '请处理当前尚未完成的步骤。')
       : prompt
     const contextMessage = since => [
       contextNotice(contextReference, since),

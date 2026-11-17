@@ -401,7 +401,7 @@ test('a completed bootstrap cannot bypass business-tool allowlist exclusions', a
   })
 })
 
-test('a file-rule checkpoint gates HTTP tools and stale context until a genuine later DSH step', async t => {
+test('file work without genuine context changes does not block HTTP tools or schedule a new step', async t => {
   const f = await fixture(t)
   const reference = f.capture('session-A')
   await f.request('session-A', 3, 2)
@@ -409,28 +409,11 @@ test('a file-rule checkpoint gates HTTP tools and stale context until a genuine 
     await f.load(reference)
     const completed = await f.call('read', { file_path: '/projects/session-A/nested/file.js' })
     assert.notEqual(completed.isError, true)
-    assert.match(resultText(completed), /Do not repeat it/)
-    assert.equal(f.toolScope.hasContextCheckpoint('session-A'), true)
-    assert.equal(f.agents[0].inbox.nextStep.length, 1)
-    assert.equal(f.agents[0].inbox.nextStep[0].source.kind, 'webbridge-context-checkpoint')
-    assert.equal(f.declarations.some(entry => entry.type === 'step/end'), false)
-    const before = f.records.length
-    for (const name of ['lookup', 'read', CONTEXT_TOOL_NAME]) {
-      expectError(await f.call(name, { context_id: reference.context_id, file_path: '/projects/session-A/nested/file.js' }), 'context-checkpoint-required')
-    }
-    assert.equal(f.records.length, before, 'Checkpoint rejection must precede registry execution')
-    await f.request('session-A', 3, 2)
-    expectError(await f.call('lookup'), 'context-checkpoint-required')
-  })
-  await f.request('session-A', 3, 3)
-  assert.equal(f.toolScope.hasContextCheckpoint('session-A'), false)
-  const continuation = f.agents[0].inbox.nextStep.splice(0)
-  const next = f.capture('session-A', [message('refreshed-rules', 'Nested AGENTS.md is now effective'), ...continuation])
-  await f.bind('session-A', next, async () => {
-    expectError(await f.call('lookup'), 'context-required')
-    const loaded = await f.load(next)
-    assert.equal(loaded.document.messages[0].content[0].text, 'Nested AGENTS.md is now effective')
+    assert.doesNotMatch(resultText(completed), /Finish this web reply|automatically continue/)
+    assert.equal(f.toolScope.hasContextCheckpoint('session-A'), false)
+    assert.deepEqual(f.agents[0].inbox.nextStep, [])
     assert.notEqual((await f.call('lookup')).isError, true)
+    assert.equal(f.declarations.some(entry => entry.type === 'step/end'), false)
   })
 })
 

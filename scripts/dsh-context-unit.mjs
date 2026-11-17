@@ -270,51 +270,32 @@ test('a rule reverting to an earlier value is delivered once and replayed inbox 
   assert.equal(agents[0].inbox.nextStep.length, 3)
 })
 
-test('unchanged rules in the same directory do not create a repeated checkpoint', async () => {
-  const { scope, agents, prepare, captureOriginal, nativeRequest } = fixture()
-  const rules = injection('rules-1', 'agent-instructions', text('same rules'))
-  captureOriginal('session-A', [rules])
-  await prepare('session-A', 1, 1)
-  await nativeRequest('session-A', () => scope.execute('read', { file_path: '/project/src/a.js' }))
-  assert.equal(agents[0].inbox.nextStep.length, 1)
-  assert.match(agents[0].inbox.nextStep[0].source.fingerprint, /^[a-f0-9]{64}$/)
-  agents[0].inbox.nextStep.splice(0)
-  await prepare('session-A', 1, 2)
-  captureOriginal('session-A', [{ ...rules, id: 'rules-2' }])
-  const next = await nativeRequest('session-A', () => scope.execute('read', { file_path: '/project/src/b.js' }))
-  assert.equal(next.ok, true)
+test('file operations never manufacture a continuation or force the web reply to end', async () => {
+  const { scope, agents, prepare, nativeRequest, calls, declarations } = fixture()
+  await prepare('session-A')
+  await nativeRequest('session-A', async () => {
+    for (const name of ['read', 'write', 'edit']) {
+      const result = await scope.execute(name, { file_path: '/project/new-scope/file.js' })
+      assert.equal(result.ok, true)
+      assert.doesNotMatch(result.body, /Finish this web reply|automatically continue/)
+    }
+  })
+  assert.equal(calls.length, 3)
   assert.equal(scope.hasContextCheckpoint('session-A'), false)
   assert.deepEqual(agents[0].inbox.nextStep, [])
-  captureOriginal('session-A', [{ ...rules, id: 'rules-3', content: text('changed rules') }])
-  await nativeRequest('session-A', () => scope.execute('read', { file_path: '/project/src/c.js' }))
-  assert.equal(scope.hasContextCheckpoint('session-A'), true)
-})
-
-test('a successful file touch requests a real step boundary and never fabricates step/end', async () => {
-  const { scope, agents, declarations, prepare, contextStore, calls, nativeRequest } = fixture()
-  const reference = contextStore.capture({ sessionId: 'session-A', messages: [injection('a')] })
-  await prepare('session-A', 3, 2)
-  const result = await nativeRequest('session-A', () => scope.execute('read', { file_path: '/project/nested/file.js' }), reference)
-  assert.equal(result.ok, true)
-  assert.equal(scope.hasContextCheckpoint('session-A'), true)
-  assert.equal(agents[0].inbox.nextStep.length, 1)
-  assert.equal(agents[0].inbox.nextStep[0].source.kind, 'webbridge-context-checkpoint')
-  assert.match(result.body, /Do not repeat it/)
   assert.equal(declarations.some(record => record.type === 'step/end'), false)
-  await assert.rejects(scope.withSession('session-A', () => scope.execute('edit', { file_path: '/project/nested/file.js' })), error => error.code === 'context-checkpoint-required')
-  assert.equal(calls.length, 1)
-  assert.throws(() => scope.readContext(reference, { agent: agents[0] }), error => error.code === 'context-checkpoint-required')
-  await prepare('session-A', 3, 2)
-  assert.equal(scope.hasContextCheckpoint('session-A'), true, 'same-step retries must not claim refreshed rules')
-  await prepare('session-A', 3, 3)
-  assert.equal(scope.hasContextCheckpoint('session-A'), false)
-  const resumed = await scope.withSession('session-A', () => scope.execute('lookup', {}))
-  assert.equal(resumed.ok, true)
 })
 
-test('same-session native calls wait for the preceding file-rule checkpoint', async () => {
-  let unblock
-  let began
+test('repeat notices reach the current tool result without scheduling another task', async () => {
+  const notice = injection('notice', 'repeat-tool-reminder', text('Do not repeat this call'))
+  const { scope, agents } = fixture({ execute: () => ({ results: [{ result: { content: text('done') } }], additionalContexts: [notice] }) })
+  const result = await scope.withSession('session-A', () => scope.execute('lookup', {}))
+  assert.deepEqual(result.context_updates, [notice])
+  assert.deepEqual(agents[0].inbox.nextStep, [])
+})
+
+test('same-session native calls preserve execution order without an artificial checkpoint', async () => {
+  let unblock, began
   const pending = new Promise(resolve => { unblock = resolve })
   const started = new Promise(resolve => { began = resolve })
   const { scope, calls, prepare, nativeRequest } = fixture({ execute: async ({ call }) => {
@@ -325,13 +306,12 @@ test('same-session native calls wait for the preceding file-rule checkpoint', as
   await nativeRequest('session-A', async () => {
     const read = scope.execute('read', { file_path: '/project/file.js' })
     const edit = scope.execute('edit', { file_path: '/project/file.js' })
-    const rejected = assert.rejects(edit, error => error.code === 'context-checkpoint-required')
     await started
     assert.equal(calls.length, 1)
     unblock()
     assert.equal((await read).ok, true)
-    await rejected
-    assert.equal(calls.length, 1, 'the queued edit must never execute before rules are refreshed')
+    assert.equal((await edit).ok, true)
+    assert.deepEqual(calls.map(entry => entry.call.name), ['read', 'edit'])
   })
 })
 
@@ -417,12 +397,12 @@ for (const route of [
   })
 }
 
-test('the bound native reference enables checkpoints without a provider-name heuristic', async () => {
+test('a native context binding does not manufacture a file checkpoint', async () => {
   const { scope, prepare, nativeRequest } = fixture()
   await prepare('session-A', 1, 1, 'another-native-route')
   const result = await nativeRequest('session-A', () => scope.execute('read', { file_path: '/project/file.js' }))
   assert.equal(result.ok, true)
-  assert.equal(scope.hasContextCheckpoint('session-A'), true)
+  assert.equal(scope.hasContextCheckpoint('session-A'), false)
 })
 
 test('a compatibility context enqueue failure cannot introduce a native checkpoint', async () => {
@@ -440,24 +420,18 @@ test('a compatibility context enqueue failure cannot introduce a native checkpoi
   assert.equal(scope.hasContextCheckpoint('session-A'), false)
 })
 
-test('missing checkpoint inbox support is rejected before a file action', async () => {
+test('file work without additional context does not require a continuation inbox', async () => {
   const { scope, agents, calls, prepare, nativeRequest } = fixture()
   await prepare('session-A')
   delete agents[0].inbox.splice
-  await assert.rejects(nativeRequest('session-A', () => scope.execute('write', { file_path: '/project/file.js' })), error =>
-    error.code === 'context-checkpoint-unavailable' && /No action was performed/.test(error.message))
-  assert.equal(calls.length, 0)
+  const result = await nativeRequest('session-A', () => scope.execute('write', { file_path: '/project/file.js' }))
+  assert.equal(result.ok, true)
+  assert.equal(calls.length, 1)
   assert.equal(scope.hasContextCheckpoint('session-A'), false)
-
-  const legacy = fixture({ contextStore: null })
-  await legacy.prepare('session-A')
-  delete legacy.agents[0].inbox.splice
-  assert.equal((await legacy.scope.withSession('session-A', () => legacy.scope.execute('write', { file_path: '/project/file.js' }))).ok, true)
-  assert.equal(legacy.calls.length, 1)
 })
 
-test('a failed checkpoint enqueue preserves the completed file action and blocks further tools', async () => {
-  const { scope, agents, calls, prepare, nativeRequest } = fixture()
+test('failed admission of real context preserves the completed action and blocks further tools', async () => {
+  const { scope, agents, calls, prepare, nativeRequest } = fixture({ execute: () => ({ results: [{ result: { content: text('done') } }], additionalContexts: [injection('real-rules')] }) })
   await prepare('session-A')
   agents[0].inbox.splice = () => { throw new Error('inbox unavailable after write') }
   const result = await nativeRequest('session-A', () => scope.execute('write', { file_path: '/project/file.js' }))
@@ -491,7 +465,7 @@ test('failure to enqueue additional context preserves both a successful result a
   assert.equal(scope.hasContextCheckpoint('session-A'), true)
 })
 
-test('a partial batch with this exact call already successful retains its outcome and checkpoint', async () => {
+test('a partial successful batch retains its outcome and genuine context without synthetic continuation', async () => {
   const update = injection('partial-success-context')
   const { scope, agents, prepare, nativeRequest } = fixture({ execute: ({ call }) => {
     throw Object.assign(new Error('batch finalization failed'), {
@@ -506,8 +480,8 @@ test('a partial batch with this exact call already successful retains its outcom
   assert.match(result.body, /Do not repeat it/)
   assert.equal(result.context_updates[0].id, update.id)
   assert.equal(agents[0].inbox.nextStep[0].id, update.id)
-  assert.equal(agents[0].inbox.nextStep[1].source.kind, 'webbridge-context-checkpoint')
-  assert.equal(scope.hasContextCheckpoint('session-A'), true)
+  assert.equal(agents[0].inbox.nextStep.length, 1)
+  assert.equal(scope.hasContextCheckpoint('session-A'), false)
 })
 
 test('another call success in a partial batch cannot be claimed for this failed call', async () => {

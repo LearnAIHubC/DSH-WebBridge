@@ -12,15 +12,12 @@
  */
 
 import { randomUUID } from 'node:crypto'
-import { dirname } from 'node:path'
 import { mentionedFiles } from './attachments.js'
 import { BridgeError } from './envelope.js'
-import { ContextIdentity, contextHash, contextHashes } from './context-identity.js'
+import { ContextIdentity } from './context-identity.js'
 
 const CONTEXT_TOOL_NAME = 'dsh_get_context'
-const INSTRUCTION_TOUCH_TOOLS = new Set(['read', 'write', 'edit'])
-const CHECKPOINT_TEXT = 'The preceding DSH tool completed successfully. Do not repeat it. Finish this web reply now without further tool calls: DSH must close its current step to refresh file-scoped project instructions. DSH will automatically continue the same task with a new context snapshot. In that continuation, load the new snapshot and resume the remaining work.'
-const CHECKPOINT_CONTINUATION = 'The preceding DSH tool completed successfully. Do not repeat it. If this notice arrives in the current tool result, finish this web reply without further tool calls so DSH can close the step and refresh file-scoped project instructions. If this notice appears in a newly supplied DSH context snapshot, that step boundary has already completed: follow the new context and continue the remaining task. Do not end another reply merely because this historical notice remains in the snapshot.'
+const CHECKPOINT_TEXT = 'Tool context could not be preserved. End this response and report the failure without repeating completed tools.'
 
 /** Context may use a user role: the source, not the role alone, identifies it. */
 function isInjectedContext(message) {
@@ -67,7 +64,6 @@ export function createToolScope(ctx, log = () => {}, { contextStore } = {}) {
   const pendingContexts = new Map()
   const seenContexts = new Map()
   const contextCheckpoints = new Map()
-  const checkpointScopes = new Map()
   const executionQueues = new Map()
   const requests = new Map()
   const requestSignals = new Map()
@@ -75,18 +71,6 @@ export function createToolScope(ctx, log = () => {}, { contextStore } = {}) {
   const inputWatchers = new Map()
   const steps = new Map()
   let lastSessionId = null
-  // Only the native context transport binds a snapshot to its active request.
-  // A store or model route alone must not alter the compatibility tool loop.
-  const checkpointIdentity = (agent, args) => {
-    const scope = dirname(args.file_path.trim())
-    return { scope, hash: contextHash({ scope, contexts: contextHashes(originalRequests.get(String(agent.id))?.messages) }) }
-  }
-  const needsCheckpoint = (agent, position, name, args, reference) => {
-    if (!(contextStore && reference && agent?.id && position && INSTRUCTION_TOUCH_TOOLS.has(name)
-      && typeof args?.file_path === 'string' && args.file_path.trim())) return false
-    const identity = checkpointIdentity(agent, args)
-    return checkpointScopes.get(String(agent.id))?.get(identity.scope) !== identity.hash
-  }
   const checkpointMessage = sessionId => contextCheckpoints.get(String(sessionId))?.failure || CHECKPOINT_TEXT
   const failedCheckpoint = (agent, position, call, error, succeeded = true) => {
     const failure = (succeeded ? 'The preceding DSH tool completed successfully. Do not repeat it. '
@@ -97,29 +81,6 @@ export function createToolScope(ctx, log = () => {}, { contextStore } = {}) {
       contextCheckpoints.set(String(agent.id), { turn: position.turn, step: position.step, callId: call.id, failure })
     }
     return failure
-  }
-  const requestCheckpoint = (agent, position, call, args, reference) => {
-    if (!needsCheckpoint(agent, position, call.name, args, reference)) return
-    const id = String(agent.id)
-    if (contextCheckpoints.has(id)) return
-    const identity = checkpointIdentity(agent, args)
-    const continuation = {
-      id: randomUUID(), role: 'user',
-      source: { kind: 'webbridge-context-checkpoint', form: 'notice', scope: identity.scope, fingerprint: identity.hash, turn: position.turn, step: position.step, completedCallId: call.id },
-      content: [{ type: 'text', text: CHECKPOINT_CONTINUATION }],
-    }
-    // The native action has already succeeded. A bridge-side enqueue failure
-    // must keep that outcome visible and leave subsequent actions blocked.
-    contextCheckpoints.set(id, { turn: position.turn, step: position.step, callId: call.id })
-    try {
-      agent.inbox.splice('next-step', agent.inbox.nextStep.length, 0, [continuation])
-    } catch (error) {
-      return failedCheckpoint(agent, position, call, error)
-    }
-    if (!checkpointScopes.has(id)) checkpointScopes.set(id, new Map())
-    checkpointScopes.get(id).set(identity.scope, identity.hash)
-    queueContext(id, continuation)
-    return CHECKPOINT_TEXT
   }
   const queueContext = (sessionId, message) => {
     if (!sessionId || !isInjectedContext(message)) return
@@ -148,7 +109,7 @@ export function createToolScope(ctx, log = () => {}, { contextStore } = {}) {
     const additions = []
     for (const message of contexts) {
       if (!seenContexts.get(id).accept(message)) continue
-      if (existing.accept(message)) additions.push(message)
+      if (!['webbridge-context-checkpoint', 'repeat-tool-reminder'].includes(message.source?.kind) && existing.accept(message)) additions.push(message)
       // Keep the executor's complete messages; they need not use a known kind.
       if (!pendingContexts.has(id)) pendingContexts.set(id, [])
       pendingContexts.get(id).push(structuredClone(message))
@@ -258,7 +219,6 @@ export function createToolScope(ctx, log = () => {}, { contextStore } = {}) {
       pendingContexts.delete(id)
       seenContexts.delete(id)
       contextCheckpoints.delete(id)
-      checkpointScopes.delete(id)
       executionQueues.delete(id)
       contextStore?.deleteSession(id)
       inputWatchers.delete(id)
@@ -397,7 +357,6 @@ export function createToolScope(ctx, log = () => {}, { contextStore } = {}) {
       pendingContexts.delete(id)
       seenContexts.delete(id)
       contextCheckpoints.delete(id)
-      checkpointScopes.delete(id)
       executionQueues.delete(id)
       inputWatchers.delete(id)
       steps.delete(id)
@@ -530,10 +489,6 @@ export function createToolScope(ctx, log = () => {}, { contextStore } = {}) {
         if (contextStore && admittedPosition && (position?.turn !== admittedPosition.turn || position?.step !== admittedPosition.step)) {
           throw new BridgeError('context-request-changed', 'This tool call belongs to an earlier DSH step. Load the new context before continuing.')
         }
-        if (needsCheckpoint(scope.agent, position, name, args, admittedReference) &&
-          (typeof scope.agent.inbox?.splice !== 'function' || !Array.isArray(scope.agent.inbox.nextStep))) {
-          throw new BridgeError('context-checkpoint-unavailable', 'DSH cannot enqueue the context refresh required by this tool. No action was performed.')
-        }
         const call = {
           id: `wb_mcp_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
           name,
@@ -594,14 +549,12 @@ export function createToolScope(ctx, log = () => {}, { contextStore } = {}) {
           const reference = contextStore.getReference(args.context_id, { sessionId: String(scope.agent.id) })
           contextStore.registerDeliveryCall(call.id, reference)
         }
-        const checkpointWarning = !result.isError && requestCheckpoint(scope.agent, position, call, args, admittedReference)
-        const body = [renderResult(result), executorWarning, contextWarning, checkpointWarning].filter(Boolean).join('\n\n')
+        const body = [renderResult(result), executorWarning, contextWarning].filter(Boolean).join('\n\n')
         return appendContextUpdates({ ok: !result.isError, body }, collectContextUpdates(scope.agent))
       }
       if (!contextStore || !scope.agent?.id) return run()
       const id = String(scope.agent.id)
-      // A concurrent edit must not overtake a read whose completion may require
-      // a real DSH step boundary before project instructions become current.
+      // Keep tool outcomes and context admissions in this agent's call order.
       const previous = executionQueues.get(id) || Promise.resolve()
       const operation = previous.catch(() => {}).then(run)
       executionQueues.set(id, operation)
