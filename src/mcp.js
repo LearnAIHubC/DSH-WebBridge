@@ -648,10 +648,11 @@ export class McpBridge {
         }
         const op = name.slice('webbridge_'.length)
         const fn = this.ops[op]
-        if (typeof fn !== 'function') throw new BridgeError('unknown-tool', `Unknown tool "${name}"`)
-        const data = await fn(args, undefined)
-        this.#logCall(name, started, true)
-        return { content: [{ type: 'text', text: JSON.stringify(data, null, 2) }] }
+        if (typeof fn === 'function') {
+          const data = await fn(args, undefined)
+          this.#logCall(name, started, true)
+          return { content: [{ type: 'text', text: JSON.stringify(data, null, 2) }] }
+        }
       }
 
       if (this.toolScope?.hasActiveRequests && routedSessionId && !this.toolScope.isSessionActive?.(routedSessionId)) {

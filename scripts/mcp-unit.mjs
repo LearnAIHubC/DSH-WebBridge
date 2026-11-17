@@ -59,6 +59,18 @@ test('MCP lists the complete DSH catalog without a 32-tool cutoff', async (t) =>
   assert.equal(new Set(listed).size, listed.length)
 })
 
+test('DSH webbridge-prefixed tools without local ops execute through the scoped registry', async (t) => {
+  const { rpc, toolScope, records } = await fixture(t, { names: ['webbridge_mcp'] })
+  const listed = (await rpc('tools/list')).result.tools.map((tool) => tool.name)
+  assert.ok(listed.includes('webbridge_mcp'))
+  const outcome = await toolScope.withSession('session-B', () => rpc('tools/call', {
+    name: 'webbridge_mcp', arguments: { value: 'status' },
+  }))
+  assert.notEqual(outcome.result.isError, true)
+  assert.equal(records[0].agent, 'session-B')
+  assert.deepEqual(JSON.parse(records[0].calls[0].arguments), { value: 'status' })
+})
+
 test('dynamic DSH JSON schemas retain real argument names and nested definitions', () => {
   const parameters = { type: 'object', properties: {
     file_path: { type: 'string' }, commands: { type: 'array', items: { type: 'object', properties: { command: { type: 'string' } }, required: ['command'] } },
