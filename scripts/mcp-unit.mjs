@@ -31,7 +31,7 @@ async function fixture(t, { names = ['read', 'write', 'pwsh'], exposeAgent = tru
     tools: { schemas: () => [schema('webbridge_agent')] } }
   const toolScope = createToolScope(ctx)
   const stateDir = mkdtempSync(join(tmpdir(), 'webbridge-mcp-unit-'))
-  const bridge = new McpBridge({ ctx, toolScope, ops: { runAgentTask: () => { throw new Error('must not start a recursive browser loop') } },
+  const bridge = new McpBridge({ ctx, toolScope, ops: { browser: async args => ({ action: args.action }), runAgentTask: () => { throw new Error('must not start a recursive browser loop') } },
     settings: { stateDir, mcp: { port: 0, token: 'unit-test-token', allowTools, exposeAgent } } })
   const status = await bridge.start()
   t.after(async () => {
@@ -129,6 +129,20 @@ test('two active web sessions still block recursive browser calls when their sin
       assert.match(outcome.result.content[0].text, /browser-busy/)
     }
   }))
+})
+
+test('read-only browser diagnostics remain available during active conversations', async t => {
+  const { rpc, toolScope } = await fixture(t)
+  await toolScope.withSession('session-A', async () => {
+    for (const action of ['pages', 'console', 'network', 'debug']) {
+      const result = (await rpc('tools/call', { name: 'webbridge_browser', arguments: { action } })).result
+      assert.notEqual(result.isError, true)
+      assert.equal(JSON.parse(result.content[0].text).action, action)
+    }
+    const blocked = (await rpc('tools/call', { name: 'webbridge_browser', arguments: { action: 'click' } })).result
+    assert.equal(blocked.isError, true)
+    assert.match(blocked.content[0].text, /browser-busy/)
+  })
 })
 
 test('explicit exclusions still apply to an otherwise complete MCP catalog', async (t) => {

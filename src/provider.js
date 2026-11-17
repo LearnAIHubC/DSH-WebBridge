@@ -150,7 +150,7 @@ export function deriveTitle(messages) {
 }
 
 export class WebChatAdapter {
-  constructor({ providerId, displayName, modelId, session, settings, log, parseReply, toolScope, accountTier }) {
+  constructor({ providerId, displayName, modelId, session, settings, log, parseReply, toolScope, accountTier, modelCatalog }) {
     this.providerId = providerId
     this.displayName = displayName
     this.modelId = modelId
@@ -160,6 +160,7 @@ export class WebChatAdapter {
     this.parseReply = parseReply
     this.toolScope = toolScope
     this.accountTier = accountTier
+    this.modelCatalog = modelCatalog
     /**
      * Per DSH-session bookkeeping. One DSH session already maps to one web
      * conversation, so initial history is sent once and tool definitions are
@@ -203,11 +204,15 @@ export class WebChatAdapter {
     // with INVALID_CATALOG ("invalid or duplicate model metadata").
     const tier = this.accountTier ? await this.accountTier() : 'unknown'
     if (this.settings.site === 'chatgpt' && tier === 'free') {
+      this.paidCatalog = []
       return [
         { provider, id: this.modelId, name: `${this.displayName}（思考）`, contextWindow: this.settings.providers?.contextWindow || 32000, supportsTools: true, inputModalities: ['text', 'image'] },
         { provider, id: `${this.modelId}-instant`, name: `${this.displayName}（非思考）`, contextWindow: this.settings.providers?.contextWindow || 32000, supportsTools: true, inputModalities: ['text', 'image'] },
       ]
     }
+    const choices = this.modelCatalog ? await this.modelCatalog() : []
+    this.paidCatalog = choices
+    if (choices.length) return [...new Set(choices.map(choice => choice.modelName))].map(name => this.modelInfo(provider, `${this.modelId}-${paidKey(name)}`, { modelName: name, choices: choices.filter(choice => choice.modelName === name) }))
     return [
       {
         provider,
@@ -221,11 +226,31 @@ export class WebChatAdapter {
     ]
   }
 
-  async resolveModel(provider, model) {
+  async resolveModel(provider, model, signal) {
+    return this.modelInfo(provider, model, await this.selectionFor(model, signal))
+  }
+
+  async selectionFor(model, signal) {
+    signal?.throwIfAborted()
+    if (!String(model || '').startsWith(`${this.modelId}-paid-`)) return null
+    const catalog = this.modelCatalog ? this.modelCatalog() : Promise.resolve([])
+    let aborted
+    const choices = signal ? await Promise.race([catalog, new Promise((_, reject) => {
+      aborted = () => reject(signal.reason || new Error('请求已中止。'))
+      signal.addEventListener('abort', aborted, { once: true })
+      if (signal.aborted) aborted()
+    })]).finally(() => signal.removeEventListener('abort', aborted)) : await catalog
+    const match = choices.find(choice => `${this.modelId}-${paidKey(choice.modelName)}` === model || `${this.modelId}-${choice.key}` === model)
+    if (!match) throw new BridgeError('model-unavailable', '所选网页模型或思考档位已不可用，请刷新模型列表。')
+    return { modelName: match.modelName, choices: choices.filter(choice => choice.modelName === match.modelName).map(choice => ({ ...choice })), legacyPower: `${this.modelId}-${match.key}` === model ? match.power : undefined }
+  }
+
+  modelInfo(provider, model, choice) {
     return {
       provider,
       id: model,
-      name: this.settings.site === 'chatgpt' ? `${this.displayName}（${model === `${this.modelId}-instant` ? '非思考' : '思考'}）` : this.displayName,
+      name: choice ? choice.modelName : this.settings.site === 'chatgpt' ? `${this.displayName}（${model === `${this.modelId}-instant` ? '非思考' : this.paidCatalog?.length ? '网页当前设置' : '思考'}）` : this.displayName,
+      ...(choice ? { reasoning: { efforts: choice.choices.map(level => ({ id: `web-${level.power}`, name: level.label })), defaultEffort: `web-${(choice.choices.find(level => level.power === choice.legacyPower) || choice.choices.find(level => level.preferred) || choice.choices[0]).power}` } } : {}),
       contextWindow: this.settings.providers?.contextWindow || 32000,
       supportsTools: true,
       inputModalities: ['text', 'image'],
@@ -233,9 +258,10 @@ export class WebChatAdapter {
   }
 
   async prepareCall(provider, model, signal) {
+    const selection = await this.selectionFor(model, signal)
     return {
-      model: await this.resolveModel(provider, model, signal),
-      stream: (options) => this.generate(options),
+      model: this.modelInfo(provider, model, selection),
+      stream: (options) => this.generate({ ...options, model }, selection),
     }
   }
 
@@ -244,7 +270,7 @@ export class WebChatAdapter {
   }
 
   /** One provider attempt: one browser round trip, emitted as DSH chunks. */
-  async *generate(options) {
+  async *generate(options, preparedSelection) {
     const purpose = typeof options.purpose === 'string' ? options.purpose : ''
     const isMainChat = !purpose || purpose === 'chat'
     const messages = Array.isArray(options.messages) ? options.messages : []
@@ -290,6 +316,9 @@ export class WebChatAdapter {
       yield { type: 'finish', reason: { kind: 'stop' } }
       return
     }
+    const selected = preparedSelection === undefined ? await this.selectionFor(options.model, options.signal) : preparedSelection
+    const webModel = selected && (options.reasoningEffort ? selected.choices.find(level => `web-${level.power}` === options.reasoningEffort) : selected.choices.find(level => level.power === selected.legacyPower) || selected.choices.find(level => level.preferred) || selected.choices[0])
+    if (selected && !webModel) throw new BridgeError('reasoning-unavailable', '请选择推理等级，当前网页不支持所选档位。')
     // First turn carries only the tool block plus the user's own message: the
     // DSH system prompt is huge and the web chat already has its own system
     // instructions, so sending it just bloats the composer and invites abuse
@@ -373,7 +402,7 @@ export class WebChatAdapter {
         onSubmitted: markSubmitted,
         ...(nativeMcp ? { onProgress: publish } : {}),
         ...(attachments.length ? { attachments } : {}),
-        ...(this.settings.site === 'chatgpt' ? { reasoning: options.model === `${this.modelId}-instant` ? 'off' : 'on' } : {}),
+        ...(this.settings.site === 'chatgpt' ? webModel ? { webModel } : { reasoning: options.model === `${this.modelId}-instant` ? 'off' : 'on' } : {}),
       })
       const operation = this.toolScope && isMainChat ? this.toolScope.withSession(baseSessionId, ask, signal) : ask()
       let result
@@ -440,3 +469,4 @@ export class WebChatAdapter {
     yield { type: 'finish', reason: { kind: 'stop' } }
   }
 }
+import { paidModelKey as paidKey } from './chatgpt-models.js'

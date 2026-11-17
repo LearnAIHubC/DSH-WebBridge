@@ -7,6 +7,7 @@ import { homedir } from 'node:os'
 import { basename, dirname, join } from 'node:path'
 import { BridgeError } from './envelope.js'
 import { buildFingerprintScript, buildUaMetadata, buildUserAgent, defaultFingerprint } from './browser-fingerprint.js'
+import { BrowserDiagnostics, diagnosticText, diagnosticUrl } from './browser-diagnostics.js'
 
 const DEFAULT_SESSION = '__webbridge_default__'
 const STOP_SELECTOR = 'button[data-testid="stop-button"],button[aria-label="停止"],button[aria-label="停止生成"],button[aria-label="停止流式传输"],button[aria-label="Stop"],button[aria-label="Stop generating"],button[aria-label="Stop streaming"]'
@@ -50,6 +51,7 @@ export class BrowserDriver {
     this.active = 0
     this.lastMode = null
     this.generations = new Map()
+    this.diagnostics = new BrowserDiagnostics()
   }
 
   get busy() { return this.active > 0 }
@@ -120,6 +122,7 @@ export class BrowserDriver {
   }
 
   async ensureContext(forceHeaded = false) {
+    if (this.disposed) throw new BridgeError('browser-closed', '浏览器已停止。')
     await this.loadRegistry()
     if (this.context && this.context.browser()?.isConnected()) return this.context
     if (this.contextPromise) return this.contextPromise
@@ -150,8 +153,9 @@ export class BrowserDriver {
           await cdp.send('Emulation.setUserAgentOverride', { userAgent, userAgentMetadata: buildUaMetadata(version) })
         } catch {}
       }
-      for (const page of context.pages()) await applyUa(page)
-      context.on('page', page => { applyUa(page).catch(() => {}) })
+      const watch = page => this.diagnostics.watch(page, () => [...this.pages].find(([, value]) => value === page)?.[0] || '')
+      for (const page of context.pages()) { watch(page); await applyUa(page) }
+      context.on('page', page => { watch(page); applyUa(page).catch(() => {}) })
       await context.addInitScript(buildFingerprintScript(fingerprint, userAgent, locale))
       context.on('close', () => { if (this.context === context) this.context = null })
       this.lastMode = { headed, at: Date.now() }
@@ -178,10 +182,11 @@ export class BrowserDriver {
     const context = await this.ensureContext()
     let pageId = this.sessionPages.get(sessionKey)
     let page = pageId ? this.pages.get(pageId) : null
-    if (page && !page.isClosed()) return page
+    if (page && !page.isClosed()) { this.lastPageId = pageId; return page }
     page = await context.newPage()
     pageId = `wb-${createHash('sha256').update(String(sessionKey)).digest('hex').slice(0, 20)}`
     this.pages.set(pageId, page)
+    this.lastPageId = pageId
     this.sessionPages.set(sessionKey, pageId)
     const old = this.sessions.get(sessionKey) || {}
     this.sessions.set(sessionKey, { ...old, pageId, createdAt: old.createdAt || new Date().toISOString() })
@@ -260,8 +265,8 @@ export class BrowserDriver {
     }
   }
 
-  async state() {
-    const page = await this.currentPage()
+  async state(page) {
+    page ||= await this.currentPage()
     const url = page.url()
     const title = await page.title().catch(() => '')
     const parsedUrl = new URL(url || 'about:blank')
@@ -305,6 +310,26 @@ export class BrowserDriver {
   async fillLong(selector, value, options = {}) { return this.fill(selector, value, options) }
   async press(key, options = {}) { const page = await this.currentPage(); await page.keyboard.press(String(key), { timeout: options.timeoutMs || 10000 }); return { ok: true } }
   async eval(expression, options = {}) { const page = await this.currentPage(); const result = await page.evaluate(String(expression)); return { result } }
+  async inspect(action, options = {}) {
+    const pages = [...this.pages].filter(([, page]) => !page.isClosed()).map(([pageId, page]) => ({ pageId, url: diagnosticUrl(page.url()), current: pageId === this.lastPageId }))
+    if (options.pageId && !pages.some(page => page.pageId === options.pageId)) throw new BridgeError('page-not-found', '调试页面已关闭，请刷新页面列表。')
+    const common = { running: Boolean(this.context), pages }
+    if (action === 'pages') return common
+    if (['console', 'network'].includes(action)) return { ...common, ...this.diagnostics.read(action, options) }
+    if (action !== 'debug') throw new BridgeError('unknown-action', '未知的浏览器调试操作。')
+    const pageId = options.pageId || this.lastPageId
+    const page = this.pages.get(pageId)
+    const result = { ...common, console: this.diagnostics.read('console', options), network: this.diagnostics.read('network', options), dialogs: this.diagnostics.read('dialogs', options) }
+    if (!page || page.isClosed()) return result
+    result.state = { ...(await this.state(page)), url: diagnosticUrl(page.url()), pageId }
+    try {
+      const path = join(this.stateDir, 'screenshots', `debug-${Date.now()}.png`)
+      await mkdir(dirname(path), { recursive: true })
+      await page.screenshot({ path, timeout: 10000 })
+      result.screenshot = { path }
+    } catch (error) { result.screenshot = { error: diagnosticText(error.message) } }
+    return result
+  }
   async attachTextFile(name, content) {
     const page = await this.currentPage()
     const payload = { name: basename(String(name)), content: String(content).slice(0, 20000) }
@@ -393,6 +418,7 @@ export class BrowserDriver {
   }
   async stop() { await this.persistRegistry(); await this.closeContext(); return { ok: true } }
   async closeContext() {
+    if (this.contextPromise) await this.contextPromise.catch(() => {})
     const context = this.context
     this.context = null
     if (context) await context.close().catch(() => {})
@@ -400,4 +426,5 @@ export class BrowserDriver {
     this.lastMode = null
     this.generations.clear()
   }
+  async dispose() { this.disposed = true; await this.stop() }
 }

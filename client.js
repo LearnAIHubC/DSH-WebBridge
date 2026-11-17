@@ -1,7 +1,7 @@
 window.__ModuleLoader__.load({ id: "@local/dsh-webbridge", factory: (require) => {
 const SETUP_PACKAGE = '@local/dsh-webbridge'
 const SETUP_SERVICE = 'webbridgeSetup'
-const ACTIONS = new Set(['loginChatgpt', 'loginConsole', 'save', 'connect', 'reinstall', 'refreshTools', 'disconnect', 'setDebugMode'])
+const ACTIONS = new Set(['loginChatgpt', 'loginConsole', 'save', 'connect', 'reinstall', 'refreshTools', 'refreshModels', 'disconnect', 'setDebugMode'])
 
 function parseSetupCommand(value) {
   if (!value || typeof value !== 'object' || !ACTIONS.has(value.action)) throw new Error('未知的 WebBridge 设置操作。')
@@ -30,6 +30,25 @@ function parseSetupState(value) {
   if ('runtimeApiKey' in value || 'runtimeApiKey' in value.tunnel) throw new Error('密钥不能返回到设置状态。')
   return value
 }
+function parseDebugQuery(value) {
+  if (!value || !['console', 'network', 'debug', 'pages'].includes(value.action)) throw new Error('未知的浏览器调试操作。')
+  const query = { action: value.action }
+  for (const key of ['pageId', 'filter', 'type']) {
+    if (value[key] !== undefined) {
+      if (typeof value[key] !== 'string' || value[key].length > 500) throw new Error('调试筛选格式无效。')
+      if (value[key]) query[key] = value[key]
+    }
+  }
+  if (value.limit !== undefined) {
+    if (!Number.isInteger(value.limit) || value.limit < 1 || value.limit > 500) throw new Error('调试记录数量应在 1–500 之间。')
+    query.limit = value.limit
+  }
+  for (const key of ['errors', 'clear']) if (value[key] !== undefined) {
+    if (typeof value[key] !== 'boolean') throw new Error('调试筛选格式无效。')
+    query[key] = value[key]
+  }
+  return query
+}
 const codec = (name, parse) => ({ mode: 'strict', typeSymbol: `${SETUP_PACKAGE}#${name}`, schema: { parse }, create: () => ({ parse }) })
 const stateCodec = codec('SetupState', parseSetupState)
 const setupRemote = {
@@ -37,6 +56,7 @@ const setupRemote = {
   descriptors: [
     { id: `${SETUP_PACKAGE}#${SETUP_SERVICE}/read`, service: SETUP_SERVICE, namespace: SETUP_SERVICE, method: 'read', invocation: { kind: 'direct' }, parameters: [], result: stateCodec },
     { id: `${SETUP_PACKAGE}#${SETUP_SERVICE}/execute`, service: SETUP_SERVICE, namespace: SETUP_SERVICE, method: 'execute', invocation: { kind: 'direct' }, parameters: [{ name: 'command', wire: 'command', source: 'json', codec: codec('SetupCommand', parseSetupCommand) }], result: stateCodec },
+    { id: `${SETUP_PACKAGE}#${SETUP_SERVICE}/debug`, service: SETUP_SERVICE, namespace: SETUP_SERVICE, method: 'debug', invocation: { kind: 'direct' }, parameters: [{ name: 'query', wire: 'query', source: 'json', codec: codec('DebugQuery', parseDebugQuery) }], result: codec('DebugResult', value => value) },
   ],
 }
 
@@ -55,11 +75,44 @@ const css = `
 .wb-actions{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-top:22px}.wb-badge{display:inline-flex;align-items:center;gap:6px;font-size:12px;padding:4px 8px;border-radius:20px;background:rgba(128,128,128,.08)}.wb-dot{width:7px;height:7px;border-radius:50%;background:#9ca3af}.wb-dot[data-ready=true]{background:#20b977}
 .wb-field{display:block;margin:17px 0;font-size:13px;font-weight:500}.wb-field input,.wb-field select{display:block;box-sizing:border-box;width:100%;border:1px solid rgba(128,128,128,.3);border-radius:7px;color:inherit;background:var(--background-primary,Canvas);padding:9px 11px;margin-top:7px;font:inherit}.wb-field small{display:block;opacity:.6;font-size:12px;font-weight:400;margin-top:6px}
 .wb-notice{margin-top:18px;border:1px solid rgba(128,128,128,.18);border-radius:9px;padding:12px 14px;font-size:13px;line-height:1.6}.wb-notice[data-error=true]{color:#b74439;border-color:#b7443945;background:#b7443908}.wb-id{font-family:monospace;font-size:12px;overflow-wrap:anywhere}.wb-settings input[type=checkbox]{accent-color:currentColor;width:16px;height:16px}.wb-section-title{font-size:14px;font-weight:600;margin-top:24px}
+.wb-debug-output{max-height:360px;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere;font:12px/1.6 monospace;padding:12px;border:1px solid rgba(128,128,128,.2);border-radius:8px}.wb-debug-image{display:block;max-width:100%;height:auto;margin-top:16px;border:1px solid rgba(128,128,128,.2);border-radius:8px}
 `
 const statusNames = { 'not-configured': '未配置', stopped: '已断开', starting: '启动中', 'installing-runtime': '安装隧道客户端', connecting: '连接中', connected: '已连接', reconnecting: '正在重连', error: '连接失败', 'authentication-error': '密钥需要更新' }
 const authNames = { unknown: '尚未检查', ready: '已登录', 'needs-login': '请完成登录' }
 
-function SettingsSection({ read, execute }) {
+function BrowserDebugPanel({ readDebug }) {
+  const [result, setResult] = React.useState(null)
+  const [pending, setPending] = React.useState(false)
+  const [error, setError] = React.useState('')
+  const [pageId, setPageId] = React.useState('')
+  const [filter, setFilter] = React.useState('')
+  const [errors, setErrors] = React.useState(false)
+  const [action, setAction] = React.useState('debug')
+  const mounted = React.useRef(true)
+  React.useEffect(() => { mounted.current = true; return () => { mounted.current = false } }, [])
+  const load = async (nextAction, clear = false) => {
+    setPending(true); setError(''); setAction(nextAction)
+    try {
+      const next = await readDebug({ action: nextAction, pageId, filter, errors, clear, limit: 50 })
+      if (mounted.current) setResult(next)
+    } catch (reason) { if (mounted.current) setError(reason.message || String(reason)) }
+    finally { if (mounted.current) setPending(false) }
+  }
+  const { screenshot, ...details } = result || {}
+  return h('div', null,
+    h('p', null, '查看 WebBridge 自己的浏览器。记录保留在本次插件运行中，可在会话生成期间读取。'),
+    h('label', { className: 'wb-field' }, '调试页面', h('select', { value: pageId, onChange: event => setPageId(event.target.value) }, h('option', { value: '' }, '所有页面／最近使用的页面'), ...(result?.pages || []).map(page => h('option', { key: page.pageId, value: page.pageId }, page.url)))),
+    h('label', { className: 'wb-field' }, '筛选记录', h('input', { value: filter, placeholder: '输入日志文字或请求路径', onChange: event => setFilter(event.target.value) })),
+    h('label', null, h('input', { type: 'checkbox', checked: errors, onChange: event => setErrors(event.target.checked) }), ' 只看错误和警告'),
+    h('div', { className: 'wb-actions' }, ...[['console', '控制台'], ['network', '网络请求'], ['debug', '调试汇总与截图']].map(([value, label]) => h('button', { key: value, type: 'button', className: 'wb-button', disabled: pending, onClick: () => load(value) }, label)), h('button', { type: 'button', className: 'wb-button', disabled: pending, onClick: () => load(action, true) }, '清空记录')),
+    pending && h('p', { role: 'status' }, '正在读取浏览器调试信息…'),
+    error && h('div', { className: 'wb-notice', 'data-error': true, role: 'alert' }, error),
+    result && h('pre', { className: 'wb-debug-output', 'aria-label': '浏览器调试结果' }, JSON.stringify(details, null, 2)),
+    screenshot?.dataUrl && h('img', { className: 'wb-debug-image', src: screenshot.dataUrl, alt: '当前调试页面截图' }),
+    screenshot?.error && h('p', null, `截图未能完成：${screenshot.error}`))
+}
+
+function SettingsSection({ read, execute, debug }) {
   const [state, setState] = React.useState(null)
   const [tab, setTab] = React.useState('overview')
   const [error, setError] = React.useState('')
@@ -118,10 +171,11 @@ function SettingsSection({ read, execute }) {
   const connected = state?.tunnel.status === 'connected'
   return h('section', { ref: section, className: 'wb-settings', 'data-webbridge-settings': true }, h('style', null, css),
     h('h1', null, 'ChatGPT 网页版'),
-    h('div', { className: 'wb-tabs', role: 'tablist' }, ...[['overview', '概览'], ['tunnel', '隧道与 API Key'], ['advanced', '高级设置']].map(([value, label]) => h('button', { key: value, role: 'tab', 'aria-selected': tab === value, onClick: () => setTab(value) }, label))),
+    h('div', { className: 'wb-tabs', role: 'tablist' }, ...[['overview', '概览'], ['tunnel', '隧道与 API Key'], ['advanced', '高级设置'], ['debug', '浏览器调试']].map(([value, label]) => h('button', { key: value, role: 'tab', 'aria-selected': tab === value, onClick: () => setTab(value) }, label))),
     !state && h('p', null, '正在连接 WebBridge 设置服务…'),
     tab === 'overview' && h(React.Fragment, null,
       row('ChatGPT 网页账号', state?.accountTier === 'free' ? '免费版 · 提供思考和非思考两种模式。' : '在浏览器中登录，后续会话复用登录状态。', h('div', { className: 'wb-actions', style: { marginTop: 0 } }, badge(authNames[state?.auth.chatgpt] || '尚未检查', state?.auth.chatgpt === 'ready'), button('登录网页版', 'loginChatgpt'))),
+      row('网页模型与思考档位', state?.models?.count ? `已从网页读取 ${state.models.count} 个模型与档位组合，DSH 模型菜单会同步更新。` : '按当前账号的网页菜单读取，不预设模型名或思考档位。', button('刷新模型列表', 'refreshModels')),
       row('OpenAI 控制台', '登录后可自动创建隧道和 Runtime API Key。', h('div', { className: 'wb-actions', style: { marginTop: 0 } }, badge(authNames[state?.auth.console] || '尚未检查', state?.auth.console === 'ready'), button('登录控制台', 'loginConsole'))),
       row('官方 MCP 隧道', '使用 Nexus 相同的 OpenAI 官方方案，无需公网 IP 或域名。', badge(statusNames[state?.tunnel.status] || '未配置', connected)),
       row('Nexus DSH 插件', state?.pluginInstalled ? `${state.permissionsAll ? '全部工具允许' : '待设置权限'} · ${state.toolCount} 个当前可用 DSH 工具` : '自动创建网页插件；已存在时核对隧道后复用。', badge(state?.pluginInstalled ? '已安装' : '待安装', Boolean(state?.pluginInstalled))),
@@ -145,6 +199,7 @@ function SettingsSection({ read, execute }) {
       field('workspaceId', 'ChatGPT 工作区 ID（可选）', { help: '只有一个工作区时自动选择；有多个工作区时填写目标 ID。' }),
       field('projectName', 'OpenAI 项目名称'),
       h('div', { className: 'wb-actions' }, button('保存配置', 'save'), button('连接并应用', 'connect', true))),
+    tab === 'debug' && h(BrowserDebugPanel, { readDebug: debug }),
     (state?.job.stage || error) && h('div', { className: 'wb-notice', 'data-error': Boolean(error || state?.job.error), role: error || state?.job.error ? 'alert' : 'status' }, error || state?.job.error || state?.job.stage),
     state?.tunnel.error && !state?.job.error && h('div', { className: 'wb-notice', 'data-error': true }, state.tunnel.error))
 }
@@ -160,9 +215,10 @@ function apply(ctx) {
     }
     const read = () => unwrap(scope.remote.webbridgeSetup.read())
     const execute = command => unwrap(scope.remote.webbridgeSetup.execute(command))
+    const debug = query => unwrap(scope.remote.webbridgeSetup.debug(query))
     scope.slots.inject('settings.section', () => scope.slots.register({
       name: 'settings.section', id: 'webbridge-chatgpt-settings', order: 21,
-      label: () => 'ChatGPT 网页版', inject: () => ({ read, execute }),
+      label: () => 'ChatGPT 网页版', inject: () => ({ read, execute, debug }),
     }, SettingsSection))
   })
 }

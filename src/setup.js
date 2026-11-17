@@ -1,12 +1,14 @@
 import { createHash } from 'node:crypto'
+import { readFile } from 'node:fs/promises'
 import { TunnelSupervisor } from './tunnel.js'
 import { SetupBrowser } from './setup-browser.js'
-import { parseSetupCommand, setupRemote, SETUP_SERVICE } from './setup-contract.js'
+import { parseDebugQuery, parseSetupCommand, setupRemote, SETUP_SERVICE } from './setup-contract.js'
 
 export class WebBridgeSetup {
-  constructor({ settings, driver, bridge, log = () => {}, onReinstall = () => {}, tunnel, browser }) {
+  constructor({ settings, driver, bridge, log = () => {}, onReinstall = () => {}, tunnel, browser, models }) {
     this.settings = settings; this.driver = driver; this.bridge = bridge; this.log = log; this.onReinstall = onReinstall
     this.tunnel = tunnel || new TunnelSupervisor({ settings, bridge, log })
+    this.models = models
     this.browser = browser || new SetupBrowser({ settings, driver, stage: text => { this.job.stage = text } })
     this.job = { busy: false, action: '', stage: '', error: '', completedAt: '' }
     this.preferences = { autoRefreshTools: true, workspaceId: '', projectName: 'Default project' }
@@ -15,6 +17,7 @@ export class WebBridgeSetup {
   async initialize() {
     await this.browser.load()
     try { await this.driver.restoreSessions?.() } catch (error) { this.log(`[webbridge] saved browser sessions could not be restored: ${error.message}`) }
+    if (this.disposed) return
     Object.assign(this.preferences, this.browser.saved.preferences || {})
     try { await this.tunnel.load() }
     catch (error) {
@@ -24,6 +27,7 @@ export class WebBridgeSetup {
       return
     }
     if (this.tunnel.config?.autoReconnect) this.tunnel.start().catch(error => { this.job.error = this.tunnel.redact(error.message) })
+    if (this.disposed) return
     this.timer = setInterval(() => this.autoRefresh().catch(error => { this.log(`[webbridge:setup] ${this.tunnel.redact(error.message)}`) }), 15000)
     this.timer.unref?.()
   }
@@ -36,7 +40,17 @@ export class WebBridgeSetup {
       preferences: { ...this.preferences },
       browser: { debugMode: Boolean(this.driver.debugMode), headless: this.driver.headless, profileDir: this.driver.profileDir },
       accountTier: this.browser.saved.accountTier || 'unknown',
+      models: this.models ? { count: this.models.catalog.length, checkedAt: this.models.checkedAt ? new Date(this.models.checkedAt).toISOString() : '' } : { count: 0, checkedAt: '' },
     }
+  }
+  async debug(input) {
+    const query = parseDebugQuery(input)
+    const result = await this.driver.inspect(query.action, query)
+    if (result.screenshot?.path) {
+      const bytes = await readFile(result.screenshot.path)
+      result.screenshot.dataUrl = `data:image/png;base64,${bytes.toString('base64')}`
+    }
+    return result
   }
   execute(input) {
     const command = parseSetupCommand(input)
@@ -53,6 +67,13 @@ export class WebBridgeSetup {
     return this.read()
   }
   async perform(command) {
+    if (command.action === 'refreshModels') {
+      if (!this.models) throw new Error('网页模型控制尚未就绪。')
+      this.job.stage = '正在读取网页模型和思考档位'
+      const choices = await this.models.list(true)
+      if (choices.length && this.browser.saved.accountTier === 'free') await this.browser.persist({ accountTier: 'unknown' })
+      return
+    }
     if (command.action === 'setDebugMode') return this.driver.setDebugMode(command.debugMode)
     if (command.action === 'disconnect') { await this.tunnel.stop(); return }
     if (this.storageError && ['connect', 'reinstall', 'save'].includes(command.action) && !(command.tunnelId && command.runtimeApiKey)) throw new Error(this.storageError)
@@ -109,13 +130,13 @@ export class WebBridgeSetup {
     this.execute({ action: 'refreshTools' })
     await this.pending
   }
-  async dispose() { clearInterval(this.timer); await this.pending; await this.tunnel.stop(); await this.driver.stop?.() }
+  async dispose() { this.disposed = true; clearInterval(this.timer); await this.pending; await this.tunnel.stop(); await this.driver.dispose?.(); if (!this.driver.dispose) await this.driver.stop?.() }
 }
 
 /** Public Cordis provider and Typert descriptors; no installed SDK path needed. */
 export function mountSetupService(ctx, controller) {
   const service = {
-    read: () => controller.read(), execute: command => controller.execute(command),
+    read: () => controller.read(), execute: command => controller.execute(command), debug: query => controller.debug(query),
   }
   service.typertRemote = Object.freeze({ service, serviceKey: SETUP_SERVICE, namespace: SETUP_SERVICE })
   ctx.reflect.provide(SETUP_SERVICE, service)

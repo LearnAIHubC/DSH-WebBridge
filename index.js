@@ -22,13 +22,14 @@ import { writeActivation } from './src/activation.js'
 import { createToolScope } from './src/dsh.js'
 import { WebChatAdapter } from './src/provider.js'
 import { WebBridgeSetup, mountSetupService } from './src/setup.js'
+import { ChatgptModels } from './src/chatgpt-models.js'
 import { writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 
 export const name = 'dsh-webbridge'
 export const inject = ['tools']
 
-const VERSION = '0.2.1'
+const VERSION = '0.2.2'
 
 const OUTPUT = {
   schema: { type: 'string' },
@@ -112,11 +113,17 @@ const TOOLS = [
     op: 'browser',
     description: 'Low-level browser escape hatch: run one raw browser command when the higher-level tools cannot express the step.',
     parameters: {
-      action: { type: 'string', required: true, description: 'One of: state, open, click, fill, press, eval, screenshot, stop.' },
+      action: { type: 'string', required: true, description: 'One of: state, open, click, fill, press, eval, screenshot, stop, pages, console, network, debug. Read-only diagnostics also work while a conversation is running.' },
       selector: { type: 'string', description: 'Target selector for click and fill.' },
       value: { type: 'string', description: 'Text for fill, or the key name for press.' },
       expression: { type: 'string', description: 'JavaScript expression for eval.' },
       url: { type: 'string', description: 'URL for open.' },
+      pageId: { type: 'string', description: 'Optional page ID from pages, console, network, or debug.' },
+      limit: { type: 'number', description: 'Maximum recent diagnostic entries; default 30.' },
+      filter: { type: 'string', description: 'Filter console or network entries by text.' },
+      errors: { type: 'boolean', description: 'Only failed requests or console warnings/errors.' },
+      type: { type: 'string', description: 'Network resource type or console severity filter.' },
+      clear: { type: 'boolean', description: 'Clear the selected in-memory diagnostic records after reading.' },
     },
   },
 ]
@@ -127,14 +134,15 @@ export function apply(ctx, config = {}) {
 
   const log = makeLogger(ctx, settings)
   const driver = new BrowserDriver(settings, log)
-  const session = new ChatSession({ settings, driver, log })
+  const models = new ChatgptModels({ settings, driver, log, onChange: () => ctx.emit('llm/models-updated', 'webbridge-chatgpt') })
+  const session = new ChatSession({ settings, driver, log, modelControl: models })
   const ops = createOps({ settings, driver, session, log })
   const toolScope = createToolScope(ctx, log)
   const providers = new Map()
   const chatSessions = new Set([session])
   const adapters = new Set()
   const bridge = new McpBridge({ ctx, settings, ops, log, toolScope })
-  const setup = new WebBridgeSetup({ settings, driver, bridge, log, onReinstall: () => {
+  const setup = new WebBridgeSetup({ settings, driver, bridge, log, models, onReinstall: () => {
     for (const item of chatSessions) item.conversations.clear()
     for (const item of adapters) item.sessionState.clear()
   } })
@@ -337,7 +345,7 @@ export function apply(ctx, config = {}) {
       for (const route of routes) {
         try {
           const routeSettings = { ...settings, site: route.site }
-          const routeSession = new ChatSession({ settings: routeSettings, driver, log })
+          const routeSession = new ChatSession({ settings: routeSettings, driver, log, modelControl: route.site === 'chatgpt' ? models : undefined })
           chatSessions.add(routeSession)
           const adapter = new WebChatAdapter({
             providerId: route.id,
@@ -348,6 +356,7 @@ export function apply(ctx, config = {}) {
             log,
             parseReply: route.withTools ? parseReply : null,
             toolScope,
+            modelCatalog: route.site === 'chatgpt' ? () => models.list() : undefined,
             accountTier: async () => {
               try { return await setup.browser.observeAccount() } catch { return setup.browser.saved.accountTier || 'unknown' }
             },

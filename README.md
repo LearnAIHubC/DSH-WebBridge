@@ -2,7 +2,7 @@
 
 把已登录的 ChatGPT 网页会话接入 DeepSeek Harness（DSH）。DSH 发送用户输入，插件读取网页生成中的正文并持续同步；网页真实调用 Nexus DSH 的 MCP 工具时，DSH 记录对应工具卡片。
 
-当前版本支持 Windows 和 macOS（Apple 芯片 / Intel）、Google Chrome、DSH 0.2.2-rc.3。macOS 实机验证使用 Apple 芯片；Intel 安装包选择有回归测试，尚未在 Intel Mac 上实测。已验证 ChatGPT 免费账号；付费账号的模型菜单尚未验证。
+当前版本支持 Windows 和 macOS（Apple 芯片 / Intel）、Google Chrome、DSH 0.2.2-rc.3。macOS 实机验证使用 Apple 芯片；Intel 安装包选择有回归测试，尚未在 Intel Mac 上实测。付费账号的模型和推理等级从网页动态读取；免费账号保留思考与非思考。
 
 ## 安装与设置
 
@@ -24,6 +24,9 @@ macOS 桌面版也可以用安装包自带的命令加载本地插件：
 详细操作见 [ChatGPT 设置](docs/CHATGPT-SETUP.md)。
 
 ## 工作方式
+
+- DSH 模型列表只显示模型名，推理等级在原生下拉框中选择。发送前真实切换网页模型与滑块；设置页可刷新列表。
+- 「浏览器调试」提供控制台、网络和截图汇总，命令也可通过 `webbridge_browser` 使用 `console`、`network`、`debug`、`pages`。诊断记录有数量限制，不保存请求正文。
 
 - WebBridge 使用自己的 Playwright 持久化 Chrome Context。每个 DSH 会话有独立 Page，同一会话中的请求按顺序执行。
 - 默认无头运行；登录由用户在可见窗口完成，确认登录成功后再切回无头。调试模式可以显示窗口。

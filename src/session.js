@@ -14,9 +14,10 @@ import { randomUUID } from 'node:crypto'
  * corrupting the next caller. `enqueue` gives us exactly that.
  */
 export class ChatSession {
-  constructor({ settings, driver, log }) {
+  constructor({ settings, driver, log, modelControl }) {
     this.settings = settings
     this.driver = driver
+    this.modelControl = modelControl
     this.log = log || (() => {})
     this.chain = Promise.resolve()
     this.sessionId = `chat-session-${randomUUID()}`
@@ -179,6 +180,10 @@ export class ChatSession {
   /** Fill and submit once, then confirm ChatGPT has consumed the draft. */
   async submit(text, site, adapter, options = {}) {
     if (!String(text ?? '').trim()) throw new BridgeError('empty-message', 'Cannot submit an empty web-chat message.')
+    if (site === 'chatgpt' && options.webModel) {
+      if (!this.modelControl) throw new BridgeError('model-control-unavailable', '网页模型控制尚未就绪，尚未发送消息。')
+      await this.modelControl.select(options.webModel)
+    }
     let prepared
     try {
     await this.driver.fillLong(adapter.inputSelector, text, { signal: options.signal })
@@ -191,7 +196,7 @@ export class ChatSession {
       await this.driver.fillLong(adapter.inputSelector, text, { signal: options.signal })
       await this.ensurePlugin(adapter, {})
     }
-    await this.ensureReasoning(adapter, options.signal, options.reasoning || 'on')
+    if (!options.webModel) await this.ensureReasoning(adapter, options.signal, options.reasoning || 'on')
     if (options.watchId && this.driver.startGenerationWatch) await this.driver.startGenerationWatch(options.watchId, { signal: options.signal })
     // Older saved ChatGPT calibrations used an empty sendSelector (Enter).
     const sendSelector = adapter.sendSelector || this.sitePreset(site).adapter.sendSelector

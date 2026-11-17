@@ -127,6 +127,7 @@ export function createOps({ settings, driver, session, log }) {
     },
 
     async browser(args, signal) {
+      if (['console', 'network', 'debug', 'pages'].includes(args.action)) return { action: args.action, result: await driver.inspect(args.action, args) }
       return driver.exclusive(async () => {
       const action = String(args.action || '')
       switch (action) {
