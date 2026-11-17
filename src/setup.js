@@ -44,7 +44,7 @@ export class WebBridgeSetup {
     Object.assign(this.job, { busy: true, action: command.action, stage: '等待浏览器空闲', error: '' })
     // Return immediately so settings polling stays responsive during browser work.
     this.pending = this.perform(command).then(() => {
-      this.job.stage = /login/.test(command.action) ? '请在浏览器完成登录；完成后点击连接隧道' : command.action === 'disconnect' ? '隧道已断开' : command.action === 'save' ? '配置已加密保存' : '配置完成'
+      this.job.stage = /login/.test(command.action) ? '登录成功，可以连接隧道' : command.action === 'disconnect' ? '隧道已断开' : command.action === 'save' ? '配置已加密保存' : '配置完成'
       this.job.completedAt = new Date().toISOString()
     }).catch(error => {
       this.job.error = this.tunnel.redact(error.message)
@@ -90,8 +90,7 @@ export class WebBridgeSetup {
       await this.tunnel.start()
       await this.tunnel.waitReady()
       this.job.stage = '正在配置 ChatGPT 网页插件'
-      // Clicking connect is an explicit repair/reinstall operation. Deleting the
-      // personal definition as well as uninstalling avoids the duplicate-name 409.
+      // Verify and reuse an existing definition before attempting creation.
       await this.browser.install(this.tunnel.config.tunnelId)
       this.browser.auth.chatgpt = 'ready'
       this.onReinstall()

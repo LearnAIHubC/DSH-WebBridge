@@ -4,20 +4,22 @@
 
 1. 点击「登录网页版」，在弹出的 Chrome 中完成 ChatGPT 登录。
 2. 点击「登录控制台」，在浏览器中完成 OpenAI Platform 登录。
-3. 点击「连接隧道」。没有配置时创建 OpenAI Secure MCP Tunnel 和专用 Runtime API Key；只有测试 Key 时，在原 Tunnel ID 下升级为正式 Key；已有正式 Key 时复用。正式 Key 选择 Never，并用 Windows CurrentUser DPAPI 加密保存。连接或网页安装失败不会触发重复创建；创建提交结果不明时会停止创建，避免产生多把密钥。
+3. 点击「连接隧道」。没有配置时创建 OpenAI Secure MCP Tunnel 和专用 Runtime API Key；只有测试 Key 时，在原 Tunnel ID 下升级为正式 Key；已有正式 Key 时复用。正式 Key 选择 Never；Windows 使用 CurrentUser DPAPI 加密，macOS 保存到登录钥匙串。连接或网页安装失败不会触发重复创建；创建提交结果不明时会停止创建，避免产生多把密钥。
 4. 插件启动官方 tunnel-client，绑定本机 MCP，等待健康检查及控制面轮询成功。
-5. 自动搜索同名的个人 Nexus DSH 插件。已有定义时先卸载，再删除个人插件定义；随后通过 Tunnel ID 重新创建、连接，并设置「允许使用所有工具」及刷新工具。
+5. 首次连接时自动创建 Nexus DSH 网页插件，再设置「允许使用所有工具」并刷新工具。重试时复用已保存的插件 ID 和隧道关联；搜索结果按插件 ID 去重。发现无法确认属于当前隧道的同名定义时会停止，不覆盖或删除它。
 
-账号登录、验证码和人机验证始终由用户完成。遇到登录页时，配置任务显示「等待手动登录」；完成后再点击连接。配置失败可以重试，已保存的隧道及密钥不会重复创建。
+账号登录、验证码和人机验证始终由用户完成。登录操作先检查已有会话，最多等待五分钟供用户手动登录；检测成功后显示「登录成功，可以连接隧道」。读取状态不会重启浏览器或关闭正在填写的表单。配置失败可以重试，已保存的隧道及密钥不会重复创建。
 
 已有 Tunnel ID / Runtime API Key 可以在「隧道与 API Key」中填写。Runtime Key 仅需 Tunnels 的 **Read、Use**。这与 ChatGPT 对 DSH 工具的授权是两个不同的权限面；网页插件允许使用当前 DSH 会话的全部可用工具，执行仍经过 DSH 的权限与工具执行器。
 
 「高级设置」提供系统代理、直连、自定义代理、断线自动重连和工具自动刷新。存在多个 ChatGPT 工作区时，在此填目标工作区 ID；默认 API 项目名称为 Default project。
 
+安装流程使用固定选项值、表单属性和控件结构；工具授权使用 `full_access`，刷新使用页面的固定动作 ID。按钮显示语言不参与这些动作的定位。页面结构不符合预期时会显示具体步骤，并在提交前停止；不会通过反复创建资源来重试。
+
 ## 隧道与 Nexus 的对应关系
 
 - 官方 `tunnel-client-runtime-cloudflared` v0.0.14，启动参数和环境变量与 Nexus 相同。
-- 优先使用插件打包或已经安装的 Nexus runtime；缺少时下载官方固定版本，并校验 Nexus 固定的 ZIP SHA-256，保留 LICENSE / NOTICE。
+- 优先使用插件打包或已经安装的 runtime；Windows 也可复用 Nexus runtime。缺少时下载官方 v0.0.14，并校验固定的 ZIP SHA-256，保留 LICENSE / NOTICE 和 companion manifest。macOS 按 Node 进程架构选择 arm64 或 amd64，安装后设置可执行权限。
 - 隧道客户端主动向 OpenAI 建立连接，不需要用户拥有公网 IP、域名或开放入站端口。
 - API Key 只通过子进程环境变量传入，本机 MCP Bearer 通过独立请求头注入；两者都不会进入命令参数或设置页状态。
 - 外网代理只用于控制面，本地 MCP 始终通过回环直连。
@@ -37,7 +39,9 @@ WebBridge 不会补丁 BrowserOperator。上传、点击、输入和页面读取
 
 ## 本机数据
 
-- `~/.dsh/webbridge/tunnel-config.enc`：DPAPI 加密的隧道配置与 Runtime Key。
+- Windows：`~/.dsh/webbridge/tunnel-config.enc` 保存 DPAPI 加密的隧道配置与 Runtime Key。
+- macOS：登录钥匙串中服务名为 `DSH WebBridge` 的条目保存配置与 Runtime Key，账号由本地配置路径的 SHA-256 生成，不另写明文配置文件。首次访问可能需要解锁或允许访问钥匙串；不要把 Windows 的 DPAPI 文件当作可跨平台迁移的密钥。
+- `~/.dsh/webbridge/tunnel-runtime`：当前平台的官方隧道程序、cloudflared 及许可证。
 - `~/.dsh/webbridge/setup.json`：非敏感的插件 ID、资源名称、刷新时间和偏好设置。
 - `~/.dsh/webbridge/mcp-token.key`：本机 MCP 的独立 Bearer，供隧道客户端在本地请求中注入。
 - `~/.dsh/webbridge/chrome-profile`：WebBridge 独立 Chrome 持久 Profile（首次需要重新登录）。

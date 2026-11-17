@@ -38,8 +38,8 @@ function fixture({ initialUrl = 'https://chatgpt.com/c/previous', customNewChatB
     },
     async click(selector) {
       clicked.push(selector)
-      if (selector === 'button[aria-label="发送"]') return submitPending()
-      if (selector === 'button[aria-label="添加文件等内容"]') return
+      if (selector === SITE_PRESETS.chatgpt.adapter.sendSelector) return submitPending()
+      if (selector === 'button[data-testid="composer-plus-btn"], form button:has(svg use[href*="plus"])') return
       if (selector === 'button[data-plugin-impression-id]:has-text("Nexus DSH")') { pluginSelected = true; return }
       if (customNewChatButton && selector === 'button[data-new-chat]') return startNewChat()
       throw new Error('sidebar control is hidden')
@@ -48,7 +48,7 @@ function fixture({ initialUrl = 'https://chatgpt.com/c/previous', customNewChatB
     async attachTextFile(name, content) { attachment = { name, content }; return { ok: true } },
     async press(key) {
       keys.push(key)
-      if (key === 'Control+Shift+KeyO') {
+      if (key === (process.platform === 'darwin' ? 'Meta+Shift+KeyO' : 'Control+Shift+KeyO')) {
         if (customNewChatButton) throw new Error('shortcut unavailable')
         if (currentUrl.startsWith(root)) startNewChat()
       } else if (key === 'Enter') {
@@ -130,7 +130,7 @@ test('legacy ChatGPT calibration still submits with the visible send button', as
   await session.ask('MESSAGE_WITH_ATTACHMENT', { attachment: { name: 'context.txt', content: 'system context' } })
   assert.equal(submitted.length, 1)
   assert.equal(submitted[0].text, 'MESSAGE_WITH_ATTACHMENT')
-  assert.ok(clicked.includes('button[aria-label="发送"]'))
+  assert.ok(clicked.includes(SITE_PRESETS.chatgpt.adapter.sendSelector))
   assert.ok(!keys.includes('Enter'))
 })
 

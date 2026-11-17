@@ -1,14 +1,14 @@
 {
   "name": "@local/dsh-webbridge",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "private": true,
   "license": "AGPL-3.0-only",
   "type": "module",
   "scripts": {
     "build:client": "node scripts/build-client.mjs",
-    "test:browser": "node scripts/browser-driver-smoke.mjs",
+    "test:browser": "node --test scripts/browser-driver-smoke.mjs scripts/setup-controls-browser.mjs",
     "test:smoke": "node scripts/smoke.mjs",
-    "test": "node --test scripts/provider-chatgpt-unit.mjs scripts/session-chatgpt-unit.mjs scripts/reply-chatgpt-unit.mjs scripts/mcp-unit.mjs scripts/setup-attachments-unit.mjs scripts/page-format-unit.mjs"
+    "test": "node --test scripts/provider-chatgpt-unit.mjs scripts/session-chatgpt-unit.mjs scripts/reply-chatgpt-unit.mjs scripts/mcp-unit.mjs scripts/setup-attachments-unit.mjs scripts/page-format-unit.mjs scripts/platform-unit.mjs scripts/setup-login-unit.mjs"
   },
   "description": "Use a signed-in web chat model from DSH through a controlled browser, and optionally expose DSH tools over MCP.",
   "exports": {
@@ -20,6 +20,7 @@
     "index.js",
     "client.js",
     "scripts/prepare-tunnel-runtime.ps1",
+    "scripts/prepare-tunnel-runtime.mjs",
     "THIRD_PARTY_NOTICES.md",
     "src",
     "cordis.patch.yml",

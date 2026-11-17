@@ -164,7 +164,7 @@ export class ChatSession {
         .some((mention) => mention.getAttribute('app-mention-display-name') === ${JSON.stringify(name)})) }))()`
     const selected = (await this.driver.eval(expression, { signal: options.signal }))?.result?.pluginSelected
     if (selected && !options.attachment && !options.attachments?.length) return {}
-    await this.driver.click('button[aria-label="添加文件等内容"]', { signal: options.signal })
+    await this.driver.click('button[data-testid="composer-plus-btn"], form button:has(svg use[href*="plus"])', { signal: options.signal })
     const quotaText = (await this.driver.eval(`(() => [...document.querySelectorAll('button')].filter(button=>button.checkVisibility({checkOpacity:true,checkVisibilityCSS:true})).map(button=>button.innerText || '').find(text=>/更多上传额度/.test(text) && /后再上传/.test(text)) || '')()`, { signal: options.signal }))?.result || ''
     const quota = uploadProblem(quotaText)
     if (selected) await this.driver.press('Escape', { signal: options.signal })
@@ -476,7 +476,7 @@ export class ChatSession {
     // first message is sent, so verifying the URL here always looked like a
     // failure and the retry loop kept hopping between conversations.
     try {
-      const selector = this.adapter(site).newChatSelector || 'a[aria-label="新聊天"]'
+      const selector = this.adapter(site).newChatSelector || 'a[data-testid="create-new-chat-button"], nav a[href="/"]'
       await this.driver.click(selector, { signal: options.signal, timeoutMs: 8000 })
       await new Promise((resolve) => setTimeout(resolve, 1500))
       if (!await this.waitBlank(site, options)) throw new BridgeError('new-chat-not-ready', '网页新会话尚未清空，请检查浏览器。')

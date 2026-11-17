@@ -61,10 +61,13 @@ export function createOps({ settings, driver, session, log }) {
       }
       const opened = await driver.open(args.url || preset.url, { headed: args.headed, signal })
       let manualAuth = null
+      let authenticated = false
       try {
-        manualAuth = (await driver.state()).manualAuth ?? null
+        const state = await driver.state()
+        manualAuth = state.manualAuth ?? null
+        authenticated = state.authenticated === true
       } catch {}
-      if (args.headed && manualAuth?.required === false && !driver.debugMode) await driver.switchToHeadless?.()
+      if (args.headed && authenticated && !driver.debugMode) await driver.switchToHeadless?.()
       return {
         site,
         url: opened.url ?? args.url ?? preset.url,

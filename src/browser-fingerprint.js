@@ -27,7 +27,7 @@ export function buildUaMetadata(version) {
 export function defaultFingerprint() {
   return {
     seed: '4cb98f09fbe92eba8bcf6b6527d7056c',
-    platform: 'Win32',
+    platform: currentPlatform(),
     vendor: 'Google Inc.',
     webglVendor: 'Google Inc. (Intel)',
     webglRenderer: 'ANGLE (Intel, Intel(R) UHD Graphics 630 Direct3D11 vs_5_0 ps_5_0, D3D11)',

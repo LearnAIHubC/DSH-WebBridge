@@ -2,7 +2,7 @@
 
 把已登录的 ChatGPT 网页会话接入 DeepSeek Harness（DSH）。DSH 发送用户输入，插件读取网页生成中的正文并持续同步；网页真实调用 Nexus DSH 的 MCP 工具时，DSH 记录对应工具卡片。
 
-当前版本面向 Windows、Google Chrome 和 DSH 0.2.2-rc.3。已验证 ChatGPT 免费账号；付费账号的模型菜单尚未验证。
+当前版本支持 Windows 和 macOS（Apple 芯片 / Intel）、Google Chrome、DSH 0.2.2-rc.3。macOS 实机验证使用 Apple 芯片；Intel 安装包选择有回归测试，尚未在 Intel Mac 上实测。已验证 ChatGPT 免费账号；付费账号的模型菜单尚未验证。
 
 ## 安装与设置
 
@@ -12,6 +12,14 @@
 4. 打开「设置 → ChatGPT 网页版」，在 WebBridge 自己的浏览器窗口中手动登录 ChatGPT 与 OpenAI 控制台。
 5. 点击「连接隧道」。插件创建或复用 OpenAI Secure MCP Tunnel，并配置 Nexus DSH 网页插件。
 6. 在 DSH 会话中选择「ChatGPT 网页版」。免费账号提供思考和非思考两种模式。
+
+macOS 桌面版也可以用安装包自带的命令加载本地插件：
+
+```sh
+"/Applications/DeepSeek Harness.app/Contents/Resources/runtime/cli/bin/dsh" plugin --profile desktop add "$PWD"
+```
+
+在仓库目录执行。桌面版命令使用与 App 一致的 DSH 运行时；另装的 npm `dsh` 不负责管理 `desktop` profile。安装后可在「设置 → ChatGPT 网页版」查看。
 
 详细操作见 [ChatGPT 设置](docs/CHATGPT-SETUP.md)。
 
@@ -23,7 +31,7 @@
 - 正文在生成期间通过 text-delta 进入 DSH。网页的临时轮次 ID、消息 ID 和 Markdown 列表转换均有兼容处理；完成后使用完整网页正文构建 Markdown。
 - 默认不设置 90 秒回复期限。停止按钮消失、页面回到空闲后才完成读取；取消、登录或验证错误仍会结束等待。
 - 发送顺序是用户文字、加号菜单中的 Nexus DSH、附件、发送。额度不足时只允许跳过系统 TXT，用户附件不会静默丢弃。
-- 正式 Runtime Key 使用 Never 有效期，通过 Windows CurrentUser DPAPI 加密保存。连接失败不会反复创建资源；测试 Key 升级时保留 Tunnel ID。
+- 正式 Runtime Key 使用 Never 有效期。Windows 使用 CurrentUser DPAPI 加密，macOS 使用登录钥匙串；密钥不进入命令参数。连接失败不会反复创建资源；测试 Key 升级时保留 Tunnel ID。
 - 工具执行通过 DSH 原执行器，沿用 DSH 的权限与审批机制。网页没有调用工具时，回复直接作为正文显示。
 
 ## 测试
@@ -43,7 +51,7 @@ npm run test:browser
 ## 当前限制
 
 - 多个网页请求同时活跃时，官方 MCP 来访请求尚无经过验证的 DSH 会话标识。DSH 工具调用会返回 `ambiguous-tool-scope`，避免在错误会话中执行。需要工具的网页任务请串行运行；多 Page 隔离与恢复已单独测试。
-- 当前密钥存储与隧道安装流程依赖 Windows。付费模型和其他操作系统的完整流程尚未验证。
+- macOS 的系统代理支持 HTTP / HTTPS；PAC 和仅 SOCKS 的配置需要在高级设置中填写 HTTP 代理。Linux 的密钥存储与隧道自动安装尚未实现。
 - 页面结构可能改变。选择器可以校准，登录、验证码与站点额度由账号和页面决定。
 - `docs` 中早期公网隧道与架构文档保留为开发记录；当前安装步骤以本文及 `CHATGPT-SETUP.md` 为准。
 

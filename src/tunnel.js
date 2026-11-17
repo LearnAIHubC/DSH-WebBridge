@@ -7,10 +7,10 @@ import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import net from 'node:net'
 import { SecretVault } from './vault.js'
+import { installMacRuntime, runtimeFiles } from '../scripts/prepare-tunnel-runtime.mjs'
 
 const runFile = promisify(execFile)
 const BACKOFF = [5000, 10000, 20000, 30000, 60000]
-const runtimeName = 'tunnel-client-runtime-cloudflared.exe'
 const runtimeScript = fileURLToPath(new URL('../scripts/prepare-tunnel-runtime.ps1', import.meta.url))
 
 export function normalizeProxy(raw) {
@@ -23,10 +23,29 @@ export function normalizeProxy(raw) {
   return url.origin
 }
 
+export function macSystemProxy(text) {
+  const value = name => text.match(new RegExp(`^\\s*${name}\\s*:\\s*([^\\r\\n]+)`, 'm'))?.[1].trim()
+  for (const scheme of ['HTTPS', 'HTTP']) {
+    if (value(`${scheme}Enable`) !== '1') continue
+    const host = value(`${scheme}Proxy`)
+    const port = Number(value(`${scheme}Port`))
+    if (!host || !Number.isInteger(port) || port < 1 || port > 65535) throw new Error('macOS 系统代理地址或端口无效。')
+    return normalizeProxy(`http://${host.includes(':') && !host.startsWith('[') ? `[${host}]` : host}:${port}`)
+  }
+  if (value('ProxyAutoConfigEnable') === '1' || value('ProxyAutoDiscoveryEnable') === '1') throw new Error('当前系统使用 PAC 代理，请选择自定义代理地址。')
+  if (value('SOCKSEnable') === '1') throw new Error('当前系统仅配置 SOCKS 代理，请选择自定义 HTTP 代理地址。')
+  return null
+}
+
 export async function systemProxy() {
   if (process.platform !== 'win32') {
-    const value = process.env.HTTPS_PROXY || process.env.HTTP_PROXY
-    return value ? normalizeProxy(value) : null
+    const value = process.env.HTTPS_PROXY || process.env.https_proxy || process.env.HTTP_PROXY || process.env.http_proxy
+    if (value) return normalizeProxy(value)
+    if (process.platform === 'darwin') {
+      const { stdout } = await runFile('/usr/sbin/scutil', ['--proxy'])
+      return macSystemProxy(stdout)
+    }
+    return null
   }
   const { stdout } = await runFile('reg.exe', ['query', 'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Internet Settings'], { windowsHide: true })
   const enabled = /ProxyEnable\s+REG_DWORD\s+0x1\b/.test(stdout)
@@ -57,7 +76,7 @@ export function tunnelCommand(config, { runtimePath, mcpUrl, mcpToken, proxy, en
     MCP_EXTRA_HEADERS: 'Authorization: env:LOCALBRIDGE_MCP_AUTH',
     HARPOON_ADDITIONAL_TRANSPORTS: 'http-streamable', HARPOON_ALLOW_PLAINTEXT_HTTP: 'true',
     HARPOON_MAX_RESPONSE_BYTES: '102400', HEALTH_LISTEN_ADDR: `127.0.0.1:${config.healthPort}`,
-    CLOUDFLARED_PATH: join(dirname(runtimePath), 'cloudflared.exe'), NO_PROXY: '127.0.0.1,localhost,::1',
+    CLOUDFLARED_PATH: join(dirname(runtimePath), runtimePath.endsWith('.exe') ? 'cloudflared.exe' : 'cloudflared'), NO_PROXY: '127.0.0.1,localhost,::1',
   })
   if (proxy) childEnv.CONTROL_PLANE_HTTP_PROXY = proxy
   return { args, options: { env: childEnv, cwd: dirname(runtimePath), windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] } }
@@ -110,15 +129,22 @@ export class TunnelSupervisor {
     return this.status()
   }
   async runtime() {
+    const { runtime: runtimeName, cloudflared } = runtimeFiles()
     const candidates = [
       this.settings.tunnel?.runtimePath,
       fileURLToPath(new URL(`../resources/tunnel/${runtimeName}`, import.meta.url)),
       join(this.settings.stateDir, 'tunnel-runtime', runtimeName),
       process.env.LOCALAPPDATA && join(process.env.LOCALAPPDATA, 'Nexus', 'resources', 'tunnel', runtimeName),
     ].filter(Boolean)
-    const path = candidates.find(value => existsSync(value) && existsSync(join(dirname(value), 'cloudflared.exe')))
+    const path = candidates.find(value => existsSync(value) && existsSync(join(dirname(value), cloudflared)))
     if (path) return path
     this.state.status = 'installing-runtime'
+    if (process.platform === 'darwin') {
+      const proxy = this.config?.networkMode === 'custom' ? normalizeProxy(this.config.customProxy)
+        : this.config?.networkMode === 'direct' ? null : await systemProxy()
+      return installMacRuntime(join(this.settings.stateDir, 'tunnel-runtime'), { proxy })
+    }
+    if (process.platform !== 'win32') throw new Error('隧道自动安装目前支持 Windows 和 macOS。')
     await runFile('powershell.exe', ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', runtimeScript, '-DestinationPath', join(this.settings.stateDir, 'tunnel-runtime')], { windowsHide: true, timeout: 180000, maxBuffer: 1024 * 1024 })
     return join(this.settings.stateDir, 'tunnel-runtime', runtimeName)
   }

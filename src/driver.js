@@ -12,12 +12,17 @@ const DEFAULT_SESSION = '__webbridge_default__'
 const STOP_SELECTOR = 'button[data-testid="stop-button"],button[aria-label="停止"],button[aria-label="停止生成"],button[aria-label="停止流式传输"],button[aria-label="Stop"],button[aria-label="Stop generating"],button[aria-label="Stop streaming"]'
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms))
 
-function detectChromeVersion(executablePath, fallback = '') {
-  try {
-    const versions = readdirSync(dirname(executablePath)).filter(name => /^\d+\.\d+\.\d+\.\d+$/.test(name))
-    versions.sort((a, b) => b.localeCompare(a, undefined, { numeric: true }))
-    return versions[0] || fallback
-  } catch { return fallback }
+export function detectChromeVersion(executablePath, fallback = '') {
+  const directories = [dirname(executablePath)]
+  if (process.platform === 'darwin') directories.push(join(dirname(executablePath), '..', 'Frameworks', 'Google Chrome Framework.framework', 'Versions'))
+  for (const directory of directories) {
+    try {
+      const versions = readdirSync(directory).filter(name => /^\d+\.\d+\.\d+\.\d+$/.test(name))
+      versions.sort((a, b) => b.localeCompare(a, undefined, { numeric: true }))
+      if (versions.length) return versions[0]
+    } catch {}
+  }
+  return fallback
 }
 
 /**
@@ -57,7 +62,7 @@ export class BrowserDriver {
     if (explicit && existsSync(explicit)) return explicit
     const candidates = process.platform === 'win32'
       ? [join(process.env.PROGRAMFILES || 'C:\\Program Files', 'Google', 'Chrome', 'Application', 'chrome.exe'), join(process.env['PROGRAMFILES(X86)'] || 'C:\\Program Files (x86)', 'Google', 'Chrome', 'Application', 'chrome.exe'), join(process.env.LOCALAPPDATA || '', 'Google', 'Chrome', 'Application', 'chrome.exe')]
-      : process.platform === 'darwin' ? ['/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'] : ['/usr/bin/google-chrome', '/usr/bin/google-chrome-stable', '/usr/bin/chromium', '/usr/bin/chromium-browser']
+      : process.platform === 'darwin' ? ['/Applications/Google Chrome.app/Contents/MacOS/Google Chrome', join(homedir(), 'Applications', 'Google Chrome.app', 'Contents', 'MacOS', 'Google Chrome')] : ['/usr/bin/google-chrome', '/usr/bin/google-chrome-stable', '/usr/bin/chromium', '/usr/bin/chromium-browser']
     return candidates.find(path => path && existsSync(path))
   }
 
@@ -239,7 +244,7 @@ export class BrowserDriver {
         return { ok: true, items }
       }
       case 'wait': await page.locator(selector).waitFor({ state: 'visible', timeout }); return { ok: true }
-      case 'select': if (positional[1] === 'NONE') await page.locator(selector).selectOption([], { timeout }); else await page.locator(selector).selectOption(positional[1], { timeout }); return { ok: true }
+      case 'select': await page.locator(selector).selectOption(positional[1], { timeout }); return { ok: true }
       case 'screenshot': {
         const path = join(this.stateDir, 'screenshots', `webbridge-${Date.now()}.png`)
         await mkdir(join(this.stateDir, 'screenshots'), { recursive: true })
@@ -264,8 +269,8 @@ export class BrowserDriver {
     const controls = await page.evaluate(() => {
       const visible = node => node.checkVisibility({ checkOpacity: true, checkVisibilityCSS: true })
       const buttons = [...document.querySelectorAll('button,a')].filter(visible)
-      const signedIn = buttons.some(node => /^(打开个人资料菜单|Open profile menu)$/.test(node.getAttribute('aria-label') || '') && (node.innerText || '').trim())
-        || location.hostname === 'platform.openai.com' && buttons.some(node => /^(Create new secret key|Create tunnel)$/.test((node.innerText || '').trim()))
+      const signedIn = buttons.some(node => /^(打开个人资料菜单|Open profile menu)$/i.test(node.getAttribute('aria-label') || '') || node.getAttribute('data-testid') === 'accounts-profile-button')
+        || location.hostname === 'platform.openai.com' && buttons.some(node => /^(Create new secret key|Create tunnel|创建新密钥|创建隧道)$/i.test((node.innerText || '').trim()))
       const login = buttons.some(node => /^(登录|Log in|Sign in)$/.test((node.innerText || '').trim()))
       const password = [...document.querySelectorAll('input[type="password"]')].some(visible)
       const challenge = [...document.querySelectorAll('iframe[src*="captcha"],iframe[src*="challenges.cloudflare.com"],#challenge-running,#challenge-stage,[data-testid="captcha"]')].some(visible)
@@ -276,10 +281,6 @@ export class BrowserDriver {
     const loginRequired = Boolean(authUrl || challenge || controls.password || controls.login && !controls.signedIn)
     const manualAuth = { required: loginRequired, kind: challenge ? 'verification' : 'login', reasons: loginRequired ? [challenge ? 'verification-page' : authUrl ? 'login-url' : 'login-control'] : [] }
     const result = { url, title, headless: !this.lastMode?.headed, authenticated: Boolean(controls.signedIn && !loginRequired), manualAuth }
-    if (result.authenticated && this.active === 0 && this.lastMode?.headed && !this.debugMode) {
-      const switched = await this.switchToHeadless()
-      result.headless = switched.headless === true
-    }
     return result
   }
 

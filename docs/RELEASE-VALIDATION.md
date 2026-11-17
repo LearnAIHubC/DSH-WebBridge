@@ -1,4 +1,19 @@
-# 0.2.0 发布验证
+# 发布验证
+
+## 0.2.1 macOS 验证
+
+验证日期：2026-11-17（Asia/Shanghai）。环境：Apple 芯片 Mac、Google Chrome 157、DSH Desktop 0.2.2-rc.3、英文 ChatGPT 网页。
+
+- 通过桌面版自带的 `dsh plugin --profile desktop add` 安装，应用实际加载版本为 0.2.1。
+- 登录钥匙串的配置写入、读取、更新及按配置路径隔离通过实机回归；不写本地明文配置文件。Windows DPAPI 检查在 Mac 上跳过。
+- 官方 v0.0.14 darwin-arm64 隧道程序经固定 SHA-256 校验后安装，成功执行版本检查；运行中的控制面轮询正常，读取了 macOS 系统 HTTP 代理。
+- 英文网页中由程序自动填写 MCP 表单并创建 Nexus DSH，复用已配置的 Tunnel 和 Runtime Key，完成 `full_access` 权限设置、重新读取权限及刷新工具。重试按插件 ID 去重，不重复创建或删除定义。
+- DSH 中选择「ChatGPT 网页版」发送 `hi`，收到真实回复。同一会话再通过 Nexus DSH 创建 `~/Desktop/1.txt`；DSH 显示文件编辑卡片，磁盘上确认文件为 2 字节，内容为 `hi`。
+- 本地英文 Chrome 回归覆盖 MCP 创建、认证值 `NONE`、菜单含上传入口、内部选项 ID、权限值、固定刷新动作 ID、重复目录链接及不明确控件拒绝。浏览器回归仅使用临时 Profile 和本地页面。
+
+Intel Mac 的安装包选择经过单元测试，尚未在 Intel 硬件上实测。付费账号的模型和思考档位菜单尚未扩展。正式 Key 的首次创建没有为验证而重复执行，保留并复用了本次已创建的资源。
+
+## 0.2.0 Windows 验证
 
 验证日期：2026-11-17（Asia/Shanghai）。环境：Windows、Google Chrome、DSH 0.2.2-rc.3、ChatGPT 免费账号。
 

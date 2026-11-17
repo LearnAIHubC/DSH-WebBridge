@@ -1,6 +1,7 @@
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { mkdirSync } from 'node:fs'
+import { defaultFingerprint } from './browser-fingerprint.js'
 
 /** Expand a leading ~ and return an absolute path. */
 export function expandHome(value) {
@@ -19,12 +20,7 @@ export const DEFAULTS = {
   /** Debug mode shows every WebBridge page; normal mode is headless. */
   debugMode: false,
   chromeVersion: '157.0.8103.52',
-  fingerprint: {
-    seed: '4cb98f09fbe92eba8bcf6b6527d7056c', platform: 'Win32', vendor: 'Google Inc.',
-    webglVendor: 'Google Inc. (Intel)',
-    webglRenderer: 'ANGLE (Intel, Intel(R) UHD Graphics 630 Direct3D11 vs_5_0 ps_5_0, D3D11)',
-    canvasNoise: true, audioNoise: true, webgl: 'auto', navigator: false, devtoolsFix: true,
-  },
+  fingerprint: defaultFingerprint(),
   site: 'deepseek',
 
   /** Reply completion detection. Zero waits until the reply finishes or is stopped. */
@@ -72,7 +68,7 @@ export const SITE_PRESETS = {
     url: 'https://chatgpt.com/',
     adapter: {
       inputSelector: 'div.ProseMirror',
-      sendSelector: 'button[aria-label="发送"]',
+      sendSelector: 'button[data-testid="send-button"], form button[type="submit"]',
       messageSelector: '[class*="MarkdownRoot"]',
       streamingSelector: '',
       stripPrompt: false,
@@ -89,7 +85,7 @@ export const SITE_PRESETS = {
       verified: true,
       notes: 'Composer is div.ProseMirror; assistant replies render as [class*="MarkdownRoot"]. The 2026 UI has no data-message-author-role / article / stop-button nodes, so completion relies on text stability.',
     },
-    newChatShortcut: 'Control+Shift+KeyO',
+    newChatShortcut: process.platform === 'darwin' ? 'Meta+Shift+KeyO' : 'Control+Shift+KeyO',
     readTitle: true,
   },
   deepseek: {
