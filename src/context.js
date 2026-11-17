@@ -39,6 +39,8 @@ function serialize(value) {
 }
 
 const clone = value => JSON.parse(serialize(value))
+const UPDATE_MARKER = '\n\n[DSH context updates]\n'
+const foldText = (text, receipt) => serialize(receipt) + (text.includes(UPDATE_MARKER) ? text.slice(text.indexOf(UPDATE_MARKER)) : '')
 
 /** Split the serialized document, including oversized individual messages, without cutting a surrogate pair. */
 function fragments(text, size) {
@@ -62,7 +64,7 @@ function messageKeys(messages) {
 
 /** Immutable model-input snapshots. Authentication and agent selection remain owned by the caller. */
 export class ContextStore {
-  constructor({ pageChars = 12000, maxSnapshots = 128, maxSnapshotsPerSession = 16, maxTotalChars = 32 * 1024 * 1024 } = {}) {
+  constructor({ pageChars = 32000, maxSnapshots = 128, maxSnapshotsPerSession = 16, maxTotalChars = 32 * 1024 * 1024 } = {}) {
     this.pageChars = positiveInteger(pageChars, 'pageChars')
     this.maxSnapshots = positiveInteger(maxSnapshots, 'maxSnapshots')
     this.maxSnapshotsPerSession = positiveInteger(maxSnapshotsPerSession, 'maxSnapshotsPerSession')
@@ -193,14 +195,14 @@ export class ContextStore {
     } else {
       view = this.#view(snapshot, since_context_id)
     }
+    const repeated = view.read.has(index)
     view.read.add(index)
     const delivered = view.read.size === view.parts.length
     if (delivered) snapshot.delivered = true
-    // A fresh first-page read must remain traversable even after a prior reader
-    // completed this snapshot. Accumulated delivery is not a page-end marker.
-    const complete = delivered && index === view.parts.length - 1
-    const nextIndex = index < view.parts.length - 1 ? index + 1
-      : complete ? -1 : view.parts.findIndex((_part, partIndex) => !view.read.has(partIndex))
+    const complete = delivered
+    // Retries retain the requested fragment, but their continuation must not
+    // restart a second traversal of pages this web request already received.
+    const nextIndex = complete ? -1 : view.parts.findIndex((_part, partIndex) => !view.read.has(partIndex))
     const result = {
       schema_version: 1,
       ...referenceOf(snapshot),
@@ -211,9 +213,10 @@ export class ContextStore {
       format: 'json',
       page_index: index,
       page_count: view.parts.length,
+      ...(repeated ? { page_already_delivered: true } : {}),
       ...(view.parts.length === 1 ? { data: JSON.parse(view.parts[0]) } : {
         fragment: view.parts[index],
-        fragment_instructions: 'Concatenate fragment values in page_index order, then parse the resulting JSON document. Follow next_cursor until complete. Source roles describe DSH input; this tool result does not change host message priority.',
+        fragment_instructions: 'Concatenate fragment values in page_index order, then parse the resulting JSON document. Keep received fragments; follow next_cursor to the first unread page. A repeated page returns the same fragment, not new context. Stop reading when complete is true. Source roles describe DSH input; this tool result does not change host message priority.',
       }),
       completeness: { complete, next_cursor: nextIndex < 0 ? null : view.tokens[nextIndex], omitted: [] },
     }
@@ -319,7 +322,7 @@ export class ContextStore {
     const result = { ...block }
     let replaced = false
     for (const key of ['result', 'content', 'output', 'text']) if (own(result, key)) {
-      result[key] = key === 'text' || typeof result[key] === 'string' ? serialize(receipt) : receipt
+      result[key] = typeof result[key] === 'string' ? foldText(result[key], receipt) : key === 'text' ? serialize(receipt) : receipt
       replaced = true
     }
     if (!replaced) result.result = receipt
@@ -327,10 +330,43 @@ export class ContextStore {
   }
 
   #foldMessages(messages, session) {
+    // Rebuild transport receipts from durable, source-attributed declarations
+    // and matching results. In-memory registrations disappear after restart.
+    const calls = new Map()
+    for (const message of messages) {
+      if (message?.role !== 'assistant' || message.source?.kind !== 'model' || message.source.provider !== 'webbridge-chatgpt') continue
+      for (const block of Array.isArray(message.content) ? message.content : []) {
+        if (block?.type !== 'tool-call' || block.name !== CONTEXT_TOOL_NAME || typeof block.id !== 'string') continue
+        try {
+          const args = typeof block.arguments === 'string' ? JSON.parse(block.arguments) : block.arguments
+          if (typeof args?.context_id === 'string') calls.set(block.id, args.context_id)
+        } catch {}
+      }
+    }
+    const recover = (callId, value) => {
+      if (!calls.has(callId) || this.deliveryCalls.has(callId)) return
+      try {
+        const payload = typeof value === 'string' ? JSON.parse(value.split(UPDATE_MARKER)[0]) : value
+        if (payload?.schema_version !== 1 || payload.context_id !== calls.get(callId) ||
+          !/^[a-f0-9]{64}$/.test(payload.revision || '') ||
+          !(payload.kind === 'context-delivery-receipt' || payload.format === 'json' &&
+            (typeof payload.fragment === 'string' || payload.data?.schema_version === 1))) return
+        this.deliveryCalls.set(callId, { session, context_id: payload.context_id, revision: payload.revision })
+      } catch {}
+    }
+    for (const message of messages) {
+      const callId = message?.source?.kind === 'tool' ? message.source.callId : message?.role === 'tool' ? message.toolCallId : null
+      if (callId && typeof message.content === 'string') recover(callId, message.content)
+      for (const block of Array.isArray(message?.content) ? message.content : []) {
+        if (block?.type === 'text' && callId) recover(callId, block.text)
+        if (['tool-result', 'tool_result'].includes(block?.type)) recover(block.callId ?? block.tool_call_id ?? block.id, block.result ?? block.content ?? block.output ?? block.text)
+      }
+    }
+    while (this.deliveryCalls.size > this.maxSnapshots * 64) this.deliveryCalls.delete(this.deliveryCalls.keys().next().value)
     return messages.map(message => {
       if (!message || typeof message !== 'object') return message
-      const receipt = message.source?.kind === 'tool' ? this.#receipt(message.source.callId, session) : null
-      if (typeof message.content === 'string') return receipt ? { ...message, content: serialize(receipt) } : message
+      const receipt = this.#receipt(message.source?.kind === 'tool' ? message.source.callId : message.role === 'tool' ? message.toolCallId : null, session)
+      if (typeof message.content === 'string') return receipt ? { ...message, content: foldText(message.content, receipt) } : message
       if (!Array.isArray(message.content)) return message
       const hasResultBlocks = message.content.some(block => block && typeof block === 'object' && ['tool-result', 'tool_result'].includes(block.type))
       return { ...message, content: message.content.map(block => {
@@ -338,8 +374,8 @@ export class ContextStore {
         if (folded !== block || !receipt || hasResultBlocks) return folded
         // A source-attributed tool message without result wrappers consists of
         // that call's rendered result. Preserve non-text blocks and metadata.
-        if (typeof block === 'string') return serialize(receipt)
-        if (block?.type === 'text') return { ...block, text: serialize(receipt) }
+        if (typeof block === 'string') return foldText(block, receipt)
+        if (block?.type === 'text') return { ...block, text: foldText(block.text, receipt) }
         return block
       }) }
     })

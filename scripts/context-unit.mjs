@@ -195,6 +195,48 @@ test('repeated bootstrap results stay bounded instead of nesting prior snapshots
   assert.ok(maxSize < 10000)
 })
 
+test('a fresh store folds durable context transport after restart and preserves appended instructions', () => {
+  const old = new ContextStore({ pageChars: 100000 })
+  const reference = old.capture({ ...scope, messages: [message('large', 'old context '.repeat(4000))] })
+  const payload = old.read(reference, scope)
+  const call = { role: 'assistant', source: { kind: 'model', provider: 'webbridge-chatgpt' }, content: [
+    { type: 'tool-call', id: 'durable-call', name: CONTEXT_TOOL_NAME, arguments: JSON.stringify({ context_id: reference.context_id }) },
+  ] }
+  const result = { role: 'tool', source: { kind: 'tool', callId: 'durable-call' }, content: [{ type: 'text', text: JSON.stringify(payload) + '\n\n[DSH context updates]\nadditional project instructions' }] }
+  const restarted = new ContextStore({ pageChars: 100000 })
+  const next = restarted.capture({ ...scope, messages: [call, result, message('user', `Keep user mentions of ${CONTEXT_TOOL_NAME}`)] })
+  const data = readAll(restarted, next).data
+  assert.ok(JSON.stringify(data).length < 3000)
+  assert.match(data.messages[1].content[0].text, /context-delivery-receipt/)
+  assert.match(data.messages[1].content[0].text, /additional project instructions/)
+  assert.match(data.messages[2].content[0].text, /Keep user mentions/)
+  const unmatched = { ...call, content: [{ ...call.content[0], arguments: '{"context_id":"different"}' }] }
+  const unverified = new ContextStore({ pageChars: 100000 })
+  assert.deepEqual(readAll(unverified, unverified.capture({ ...scope, messages: [unmatched, result] })).data.messages[1], result)
+  const userSpoof = { ...call, role: 'user' }
+  const untrusted = new ContextStore({ pageChars: 100000 })
+  assert.deepEqual(readAll(untrusted, untrusted.capture({ ...scope, messages: [userSpoof, result] })).data.messages[1], result)
+})
+
+test('replayed pages continue at the first unread page instead of starting parallel full traversals', () => {
+  const store = new ContextStore({ pageChars: 200 })
+  const reference = store.capture({ ...scope, messages: [message('large', 'X'.repeat(2000))] })
+  const first = store.read(reference, scope)
+  const second = store.read({ ...reference, cursor: first.completeness.next_cursor }, scope)
+  const repeatedFirst = store.read(reference, scope)
+  assert.equal(repeatedFirst.page_index, 0)
+  assert.equal(repeatedFirst.fragment, first.fragment)
+  assert.equal(repeatedFirst.page_already_delivered, true)
+  assert.equal(repeatedFirst.completeness.next_cursor, second.completeness.next_cursor)
+  let page = second
+  while (!page.completeness.complete) page = store.read({ ...reference, cursor: page.completeness.next_cursor }, scope)
+  const repeatedSecond = store.read({ ...reference, cursor: first.completeness.next_cursor }, scope)
+  assert.equal(repeatedSecond.completeness.complete, true)
+  assert.equal(repeatedSecond.completeness.next_cursor, null)
+  store.resetDelivery(reference.context_id, scope)
+  assert.equal(readAll(store, reference).data.messages[0].content[0].text, 'X'.repeat(2000))
+})
+
 test('delta reconstructs reordered, removed, modified and new messages exactly', () => {
   const store = new ContextStore({ pageChars: 100000 })
   const previous = [message('a', 'A'), message('b', 'B'), message('c', 'C')]
