@@ -1,0 +1,22 @@
+node_modules/
+*.log
+.DS_Store
+desktop.ini
+
+# scratch files produced by live tests
+.tmp-*
+.tools/
+work/
+outputs/
+*.tgz
+*.enc
+*.key
+chrome-profile/
+uploads/
+screenshots/
+activation.json
+sessions.json
+provider-debug.json
+reply-state.json
+setup.json
+browser-mode.json

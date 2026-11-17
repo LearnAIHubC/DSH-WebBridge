@@ -1,0 +1,14 @@
+- insert:
+    - id: dsh-webbridge
+      name: '@local/dsh-webbridge'
+      config:
+        site: chatgpt
+        # Wait for completion or manual stop; no 90-second reply deadline.
+        replyTimeoutMs: 0
+        mcp:
+          enabled: true
+          port: 17877
+          allowTools:
+            - '*'
+          exposeAgent: false
+          allowedHosts: []

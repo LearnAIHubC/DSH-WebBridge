@@ -1,0 +1,7 @@
+{
+  "meta": {
+    "title": "Web chat bridge",
+    "description": "Drives a local signed-in browser so a web chat model can be used from DSH, and can expose selected DSH tools over MCP. Login and verification always stay manual.",
+    "detail": "docs/PLAN.md"
+  }
+}
