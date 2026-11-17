@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto'
 
 export const CONTEXT_TOOL_NAME = 'dsh_get_context'
-export const CONTEXT_INSTRUCTIONS = 'Before working on a DSH request, call dsh_get_context with the context_id supplied in that request. The result contains the project path, effective instructions, environment, skills and ordered context. Follow completeness.next_cursor until completeness.complete is true. For every later DSH tool whose schema exposes dsh_context_id, pass that same current context_id in dsh_context_id; it is transport-only routing metadata and is removed before DSH executes the tool. Reload when a new context_id or context update is supplied. Use since_context_id only while you retain that fully loaded context; a new chat must load a full snapshot.'
+export const CONTEXT_INSTRUCTIONS = 'When a DSH request includes a small dsh-context.txt notice, call dsh_get_context with the context_id in that notice before working on the request. Read every page by following completeness.next_cursor until completeness.complete is true. Do not call dsh_get_context again for an already delivered context unless the notice supplies a new context_id or the web conversation was reset. The result contains the project path, effective instructions, environment, skills and ordered context. For every later DSH tool whose schema exposes dsh_context_id, pass that same current context_id in dsh_context_id; it is transport-only routing metadata and is removed before DSH executes the tool. Use since_context_id only while you retain that fully loaded context; a new chat must load a full snapshot.'
 export const CONTEXT_PARAMETERS = {
   context_id: { type: 'string', required: true, description: 'Exact context reference supplied with the current DSH request.' },
   cursor: { type: 'string', description: 'Opaque next_cursor returned by the preceding page. Read every page before using the context.' },
@@ -96,6 +96,40 @@ export class ContextStore {
     return referenceOf(snapshot)
   }
 
+  /**
+   * Refresh the recoverable full payload without changing the model-visible
+   * context identity. This is used only when meaningful injected context is
+   * unchanged; ordinary conversation history is already present in the web chat.
+   */
+  refresh(contextId, { sessionId, messages, toolHistory, workspace } = {}) {
+    const snapshot = this.#owned(contextId, sessionId)
+    if (!Array.isArray(messages)) throw failure('context-invalid', 'Context messages must be an ordered array.')
+    const input = {
+      session_id: snapshot.session,
+      workspace: workspace === undefined ? {} : clone(workspace),
+      messages: this.#foldMessages(clone(messages), snapshot.session),
+      ...(toolHistory === undefined ? {} : { tool_history: this.#foldHistory(clone(toolHistory), snapshot.session) }),
+    }
+    const revision = createHash('sha256').update(serialize(input)).digest('hex')
+    const payload = { schema_version: 1, context_id: snapshot.id, revision, ...input }
+    const serialized = serialize(payload)
+    if (this.totalChars - snapshot.chars + serialized.length > this.maxTotalChars) {
+      throw failure('context-too-large', 'The complete model context exceeds the configured snapshot budget; no partial snapshot was published.')
+    }
+    this.totalChars += serialized.length - snapshot.chars
+    Object.assign(snapshot, { revision, payload, serialized, chars: serialized.length })
+    snapshot.views.clear()
+    snapshot.cursors.clear()
+    this.#trim(snapshot.session)
+    return referenceOf(snapshot)
+  }
+
+  resetDelivery(contextId, { sessionId } = {}) {
+    const snapshot = this.#owned(contextId, sessionId)
+    snapshot.delivered = false
+    for (const view of snapshot.views.values()) view.read.clear()
+  }
+
   has(contextId) { return this.snapshots.has(contextId) }
   isDelivered(contextId) { return this.snapshots.get(contextId)?.delivered === true }
 
@@ -133,6 +167,20 @@ export class ContextStore {
     const snapshot = this.#owned(context_id, sessionId)
     if (cursor !== undefined && (typeof cursor !== 'string' || !cursor)) throw failure('context-cursor-invalid', 'The context page cursor is invalid.')
     if (since_context_id !== undefined && (typeof since_context_id !== 'string' || !since_context_id)) throw failure('context-base-invalid', 'The base context reference is invalid.')
+    if (since_context_id !== undefined) {
+      const candidate = this.snapshots.get(since_context_id)
+      if (candidate && candidate.session !== snapshot.session) throw failure('context-scope-mismatch', 'The base context belongs to a different DSH session.')
+    }
+    if (cursor === undefined && snapshot.delivered) {
+      return {
+        schema_version: 1,
+        ...referenceOf(snapshot),
+        kind: 'context-delivery-receipt',
+        status: 'already-delivered',
+        note: 'This context was already read completely. Continue without reading it again.',
+        completeness: { complete: true, next_cursor: null, omitted: [] },
+      }
+    }
     let view, index = 0
     if (cursor !== undefined) {
       const position = snapshot.cursors.get(cursor)

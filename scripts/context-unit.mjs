@@ -77,12 +77,26 @@ test('snapshots are detached from input and returned data, with independent deli
   const first = store.read({ context_id: reference.context_id }, scope)
   assert.equal(first.data.messages[0].content[0].text, 'before')
   first.data.messages[0].content[0].text = 'changed by consumer'
+  assert.equal(store.read({ context_id: reference.context_id }, scope).kind, 'context-delivery-receipt')
+  store.resetDelivery(reference.context_id, scope)
   assert.equal(store.read({ context_id: reference.context_id }, scope).data.messages[0].content[0].text, 'before')
   const other = store.capture({ ...scope, messages: [message('one', 'before')] })
   assert.notEqual(reference.context_id, other.context_id)
   assert.equal(reference.revision, other.revision)
   assert.equal(store.isDelivered(reference.context_id), true)
   assert.equal(store.isDelivered(other.context_id), false)
+})
+
+test('refresh keeps a delivered context id while updating its full recovery snapshot', () => {
+  const store = new ContextStore()
+  const reference = store.capture({ ...scope, messages: [message('one', 'before')] })
+  readAll(store, reference)
+  const refreshed = store.refresh(reference.context_id, { ...scope, messages: [message('one', 'after'), message('two', 'new history')] })
+  assert.equal(refreshed.context_id, reference.context_id)
+  assert.notEqual(refreshed.revision, reference.revision)
+  assert.equal(store.read(refreshed, scope).kind, 'context-delivery-receipt')
+  store.resetDelivery(refreshed.context_id, scope)
+  assert.deepEqual(readAll(store, refreshed).data.messages.map(entry => entry.content[0].text), ['after', 'new history'])
 })
 
 test('requires a verified matching session for read and metadata lookup', () => {
@@ -122,19 +136,17 @@ test('rejects cursors from another snapshot without marking delivery complete', 
   assert.throws(() => store.read({ ...a, cursor: 'invented' }, scope), error => error.code === 'context-cursor-invalid')
 })
 
-test('a fully delivered paginated snapshot can be read again or retried without losing pages', () => {
+test('a fully delivered snapshot returns a receipt until a fresh conversation resets delivery', () => {
   const store = new ContextStore({ pageChars: 200 })
   const reference = store.capture({ ...scope, messages: [message('large', 'X'.repeat(1200))] })
   const firstRead = readAll(store, reference)
-  const first = store.read(reference, scope)
-  assert.equal(first.completeness.complete, false)
-  assert.ok(first.completeness.next_cursor)
-  const second = store.read({ ...reference, cursor: first.completeness.next_cursor }, scope)
-  assert.equal(second.page_index, 1)
-  const retriedFirst = store.read(reference, scope)
-  assert.equal(retriedFirst.completeness.next_cursor, first.completeness.next_cursor)
-  const retriedSecond = store.read({ ...reference, cursor: first.completeness.next_cursor }, scope)
-  assert.equal(retriedSecond.completeness.next_cursor, second.completeness.next_cursor)
+  const receipt = store.read(reference, scope)
+  assert.equal(receipt.kind, 'context-delivery-receipt')
+  assert.equal(receipt.status, 'already-delivered')
+  assert.equal(receipt.completeness.complete, true)
+  assert.equal(receipt.completeness.next_cursor, null)
+
+  store.resetDelivery(reference.context_id, scope)
   const secondRead = readAll(store, reference)
   assert.deepEqual(secondRead.data, firstRead.data)
   assert.equal(secondRead.pages.length, firstRead.pages.length)
@@ -197,6 +209,7 @@ test('delta reconstructs reordered, removed, modified and new messages exactly',
   assert.deepEqual(delta.removed_indices, [0])
   assert.equal(delta.replace_tool_history, true)
   const restored = applyDelta(baseline, delta)
+  store.resetDelivery(after.context_id, scope)
   assert.deepEqual(restored, readAll(store, after).data)
 })
 
@@ -206,6 +219,7 @@ test('delta remains lossless for absent and duplicate message ids', () => {
   const baseline = readAll(store, before).data
   const after = store.capture({ ...scope, messages: [{ role: 'user', content: 'new first' }, message('same', 'second'), { role: 'assistant', content: 'third' }] })
   const delta = readAll(store, after, { since_context_id: before.context_id }).data
+  store.resetDelivery(after.context_id, scope)
   assert.deepEqual(applyDelta(baseline, delta), readAll(store, after).data)
 })
 
@@ -223,7 +237,10 @@ test('delta distinguishes omitted, null and replaced tool histories', () => {
   for (const variant of variants.slice(1)) {
     const after = store.capture({ ...scope, messages: [], ...variant })
     const delta = readAll(store, after, { since_context_id: before.context_id }).data
-    assert.deepEqual(applyDelta(baseline, delta), readAll(store, after).data)
+    const restored = applyDelta(baseline, delta)
+    store.resetDelivery(after.context_id, scope)
+    const full = readAll(store, after).data
+    assert.deepEqual(restored, full)
     if (!Object.hasOwn(variant, 'toolHistory')) {
       assert.equal(delta.remove_tool_history, true)
       assert.equal(Object.hasOwn(delta, 'tool_history'), false)
@@ -232,7 +249,7 @@ test('delta distinguishes omitted, null and replaced tool histories', () => {
       assert.deepEqual(delta.tool_history, variant.toolHistory)
     }
     before = after
-    baseline = readAll(store, before).data
+    baseline = full
   }
 })
 
@@ -257,7 +274,9 @@ test('missing or incompletely delivered bases explicitly fall back to full, fore
   const current = store.capture({ ...scope, messages: [message('b', 'B')] })
   const foreign = store.capture({ sessionId: 'session-B', messages: [message('private', 'B')] })
   assert.equal(store.read({ ...current, since_context_id: unread.context_id }, scope).fallback_reason, 'base-not-fully-delivered')
+  store.resetDelivery(current.context_id, scope)
   assert.equal(store.read({ ...current, since_context_id: 'missing' }, scope).fallback_reason, 'base-unavailable')
+  store.resetDelivery(current.context_id, scope)
   assert.equal(store.read({ ...current, since_context_id: 'missing' }, scope).mode, 'full')
   assert.throws(() => store.read({ ...current, since_context_id: foreign.context_id }, scope), error => error.code === 'context-scope-mismatch')
 })

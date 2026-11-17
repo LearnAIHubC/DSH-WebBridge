@@ -59,7 +59,8 @@ function fixture({ steps = [], scope: scopeOverrides = {}, adapter: adapterOverr
         const flags = { contextAttachmentDelivered: step.contextAttachmentDelivered ?? Boolean(request.attachment), conversation }
         options.onSubmitted?.(flags)
         if (step.progressBeforeContext) options.onProgress?.({ text: step.progressBeforeContext })
-        const match = request.message.match(/参数为 (\{[^\n]*?\})。/)
+        const bootstrap = [request.message, request.attachment?.content].find(value => typeof value === 'string' && value.includes('dsh_get_context')) || ''
+        const match = bootstrap.match(/参数为 (\{[^\n]*?\})。/)
         if (match) {
           request.args = JSON.parse(match[1])
           if (step.read !== 'none') Object.assign(request, readContext(store, request.args, options.sessionKey, step.read === 'first'))
@@ -94,11 +95,10 @@ test('native bootstrap exports the full effective input while keeping the compos
   assert.deepEqual(sent[0].data.messages, messages)
   assert.deepEqual(sent[0].data.tool_history, toolHistory)
   assert.deepEqual(sent[0].data.workspace, { cwd: '/project/current' })
-  assert.equal(sent[0].attachment, null)
-  assert.ok(sent[0].message.length < 700)
-  assert.match(sent[0].message, /dsh_get_context.*context_id/)
-  assert.match(sent[0].message, /用户：现在修改代码/)
-  assert.doesNotMatch(sent[0].message, /SYSTEM_PROMPT|AGENTS\.md|available_skills|之前的决定|\/project\/current/)
+  assert.equal(sent[0].message, '现在修改代码')
+  assert.ok(sent[0].attachment.content.length < 700)
+  assert.match(sent[0].attachment.content, /dsh_get_context.*context_id/)
+  assert.doesNotMatch(sent[0].message, /请先调用|用户：|SYSTEM_PROMPT|AGENTS\.md|available_skills|之前的决定|\/project\/current/)
   assert.ok(sent[0].pages.length > 5)
   assert.equal(bound[0].contextReference.context_id, sent[0].args.context_id)
   assert.equal(adapter.sessionState.get('main').contextDelivered, true)
@@ -114,7 +114,33 @@ test('context-only continuation carries updated rules without replaying the old 
   assert.equal(sent[1].pages[0].mode, 'delta')
   assert.deepEqual(sent[1].data.messages.map(entry => entry.message), [update])
   assert.match(sent[1].message, /DSH 上下文已更新。请继续上一任务/)
-  assert.doesNotMatch(sent[1].message, /用户：修改一个文件/)
+  assert.doesNotMatch(sent[1].message, /请先调用|用户：修改一个文件/)
+  assert.match(sent[1].attachment.content, /dsh_get_context/)
+})
+
+test('ordinary turns and checkpoint-only continuations do not announce a context update', async () => {
+  const { adapter, sent } = fixture()
+  const initial = [user('task', '第一个问题')]
+  await collect(adapter, { sessionId: 'main', messages: initial })
+  const firstContextId = adapter.sessionState.get('main').contextReference.context_id
+  const history = [
+    ...initial,
+    { id: 'answer', role: 'assistant', source: { kind: 'model' }, content: [{ type: 'text', text: '处理中' }] },
+    { id: 'tool', role: 'user', source: { kind: 'tool', callId: 'call-1' }, content: [{ type: 'text', text: '工具结果' }] },
+    { id: 'checkpoint', role: 'user', source: { kind: 'webbridge-context-checkpoint' }, content: [{ type: 'text', text: 'continue' }] },
+  ]
+  await collect(adapter, { sessionId: 'main', messages: history })
+  assert.equal(sent[1].message, '请继续上一任务，已经完成的工具操作不要重复执行。')
+  assert.doesNotMatch(sent[1].message, /上下文已更新|dsh_get_context/)
+  assert.equal(sent[1].attachment, null)
+  assert.equal(sent[1].args, undefined)
+  assert.equal(adapter.sessionState.get('main').contextReference.context_id, firstContextId)
+
+  await collect(adapter, { sessionId: 'main', messages: [...history, user('next', '第二个问题')] })
+  assert.equal(sent[2].message, '第二个问题')
+  assert.doesNotMatch(sent[2].message, /请先调用|用户：/)
+  assert.equal(sent[2].attachment, null)
+  assert.equal(adapter.sessionState.get('main').contextReference.context_id, firstContextId)
 })
 
 test('a new conversation loads full context and restores earlier user attachments', async () => {
@@ -125,7 +151,8 @@ test('a new conversation loads full context and restores earlier user attachment
   await collect(adapter, { sessionId: 'main', messages: [upload, user('followup', '继续分析')] })
   assert.deepEqual(sent[0].attachments, [{ path: '/attachments/file-id', name: 'design.txt' }])
   assert.deepEqual(sent[1].attachments, [])
-  assert.equal(sent[1].pages[0].mode, 'delta')
+  assert.equal(sent[1].attachment, null)
+  assert.equal(sent[1].args, undefined)
   assert.equal(Object.hasOwn(sent[2].args, 'since_context_id'), false)
   assert.equal(sent[2].pages[0].mode, 'full')
   assert.deepEqual(sent[2].attachments, sent[0].attachments)
