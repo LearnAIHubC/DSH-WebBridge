@@ -38,6 +38,7 @@ export class ChatgptModels {
   async list(force = false) {
     await this.load()
     if (this.pending) return this.pending
+    if (!force && (this.driver.context === null || this.driver.pages?.size === 0)) return this.catalog
     if (this.driver.busy) {
       if (force) throw new BridgeError('browser-busy', '浏览器正在处理会话，请稍后刷新模型列表。')
       return this.catalog

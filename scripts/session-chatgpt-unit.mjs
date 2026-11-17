@@ -99,6 +99,15 @@ test('ChatGPT sessions get distinct conversations and resume their original conv
   assert.equal(session.conversations.get('chatgpt:A')?.url, urlA)
 })
 
+test('a DSH conversation releases its browser page after the reply while retaining its address', async () => {
+  const { session } = fixture()
+  const released = []
+  session.driver.releasePage = async key => { released.push(key) }
+  await session.ask('完成后关闭页面', { sessionKey: 'task-A' })
+  assert.deepEqual(released, ['chatgpt:task-A'])
+  assert.ok(session.conversations.get('chatgpt:task-A').url)
+})
+
 test('a first ChatGPT request starts a new conversation when another site was active', async () => {
   const { provider, session, previous } = fixture({ initialUrl: 'https://example.com/' })
   assert.match(await send(provider, 'from-other-site', '苹果'), /苹果/)

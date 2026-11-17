@@ -126,6 +126,7 @@ export class WebBridgeSetup {
     return createHash('sha256').update(JSON.stringify({ tools: this.bridge.catalog(), instructions: this.bridge.instructions || '' })).digest('hex')
   }
   async autoRefresh() {
+    if (this.driver.context === null || this.driver.pages?.size === 0) return
     if (!this.job.busy && !this.driver.busy) await this.browser.observeAccount()
     if (!this.preferences.autoRefreshTools || !this.browser.saved.pluginId || this.job.busy || this.driver.busy || this.tunnel.state.status !== 'connected') return
     const next = this.catalogFingerprint()

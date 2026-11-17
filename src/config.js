@@ -17,7 +17,7 @@ export const DEFAULTS = {
   /** Native WebBridge-owned Chrome runtime; BrowserOperator remains untouched. */
   browserProfileDir: '~/.dsh/webbridge/chrome-profile',
   browserExecutablePath: '',
-  /** Debug mode shows every WebBridge page; normal mode is headless. */
+  /** Debug mode shows browser tasks on demand; normal mode is headless. */
   debugMode: false,
   chromeVersion: '157.0.8103.52',
   fingerprint: defaultFingerprint(),

@@ -145,6 +145,45 @@ test('ordinary turns and checkpoint-only continuations do not announce a context
   assert.equal(adapter.sessionState.get('main').contextReference.context_id, firstContextId)
 })
 
+test('identical injected content with new message IDs and repeated notices does not refresh context', async () => {
+  const { adapter, sent } = fixture()
+  const system = { id: 'system-1', role: 'system', content: 'unchanged system instructions' }
+  const rule = { id: 'rule-1', role: 'user', source: { kind: 'agent-instructions', scope: '/project' }, content: 'unchanged project rules' }
+  const task = user('task', '继续任务')
+  const tool = { name: 'read', parameters: { file_path: { type: 'string' } } }
+  await collect(adapter, { sessionId: 'main', messages: [system, task, rule], toolHistory: { tools: [tool], updates: [] } })
+  const reference = adapter.sessionState.get('main').contextReference.context_id
+  await collect(adapter, {
+    sessionId: 'main',
+    messages: [
+      { ...system, id: 'system-2' }, task, rule, { ...rule, id: 'rule-2' },
+      { id: 'notice-1', role: 'user', source: { kind: 'webbridge-context-checkpoint', step: 2 }, content: 'continue' },
+      { id: 'notice-2', role: 'user', source: { kind: 'repeat-tool-reminder' }, content: 'do not repeat' },
+      { id: 'clock-2', role: 'user', source: { kind: 'time-context' }, content: 'new time' },
+    ],
+    toolHistory: { tools: [tool], updates: [{ messageId: 'random-update-id', additions: [tool] }] },
+  })
+  assert.equal(adapter.sessionState.get('main').contextReference.context_id, reference)
+  assert.equal(sent[1].args, undefined)
+  assert.doesNotMatch(sent[1].message, /上下文已更新|dsh_get_context/)
+})
+
+test('a scoped rule changing A to B and back to A still refreshes with deltas', async () => {
+  const { adapter, sent } = fixture()
+  const task = user('task', '继续任务')
+  const rule = (id, content) => ({ id, role: 'user', source: { kind: 'agent-instructions', scope: '/project' }, content })
+  const a = rule('a-1', 'rules A')
+  const b = rule('b-1', 'rules B')
+  const reverted = rule('a-2', 'rules A')
+  await collect(adapter, { sessionId: 'main', messages: [task, a] })
+  await collect(adapter, { sessionId: 'main', messages: [task, a, b] })
+  await collect(adapter, { sessionId: 'main', messages: [task, a, b, reverted] })
+  assert.equal(sent[1].pages[0].mode, 'delta')
+  assert.equal(sent[2].pages[0].mode, 'delta')
+  assert.deepEqual(sent[1].data.messages.map(entry => entry.message), [b])
+  assert.deepEqual(sent[2].data.messages.map(entry => entry.message), [reverted])
+})
+
 test('a new conversation loads full context and restores earlier user attachments', async () => {
   const { adapter, sent } = fixture({ steps: [{}, {}, { newConversation: true }] })
   const upload = { ...user('file', '请分析这个文件'), content: [{ type: 'text', text: '请分析这个文件' }, { type: 'file', attachment: { attachmentId: 'file-id', name: 'design.txt' } }] }

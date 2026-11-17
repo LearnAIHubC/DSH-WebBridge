@@ -7,6 +7,25 @@ import { SetupBrowser } from '../src/setup-browser.js'
 import { WebBridgeSetup } from '../src/setup.js'
 import { BrowserDriver } from '../src/driver.js'
 import { BridgeError } from '../src/envelope.js'
+import { ChatgptModels } from '../src/chatgpt-models.js'
+
+test('idle account checks, model catalogs and background refresh never launch Chrome', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'wb-idle-browser-'))
+  try {
+    const driver = new BrowserDriver({ stateDir: root })
+    driver.state = async () => { throw new Error('idle account checks must not create a page') }
+    driver.exclusive = async () => { throw new Error('idle catalog reads must not create a page') }
+    const browser = new SetupBrowser({ settings: { stateDir: root }, driver })
+    browser.saved.accountTier = 'plus'
+    assert.equal(await browser.observeAccount(), 'plus')
+    const models = new ChatgptModels({ settings: { stateDir: root }, driver })
+    assert.deepEqual(await models.list(), [])
+    const setup = new WebBridgeSetup({ settings: {}, driver, browser, bridge: { catalog() { throw new Error('idle refresh must wait') } }, tunnel: {} })
+    await setup.autoRefresh()
+    assert.equal(driver.context, null)
+    assert.equal(driver.pages.size, 0)
+  } finally { await rm(root, { recursive: true, force: true }) }
+})
 
 test('a repeated console login recognizes the existing session without restarting Chrome', async () => {
   const root = await mkdtemp(join(tmpdir(), 'wb-login-test-'))

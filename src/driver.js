@@ -105,20 +105,9 @@ export class BrowserDriver {
     await mkdir(this.stateDir, { recursive: true })
     await writeFile(this.modePath, JSON.stringify({ debugMode: this.debugMode, updatedAt: new Date().toISOString() }, null, 2), { mode: 0o600 })
     const reopen = this.context !== null
-    const sessions = [...this.sessions.entries()]
-    const activeKey = this.storage.getStore() || DEFAULT_SESSION
-    const activePage = this.pages.get(this.sessionPages.get(activeKey))
-    const activeUrl = activePage && !activePage.isClosed() ? activePage.url() : ''
-    if (reopen) {
-      await this.closeContext()
-      await this.ensureContext()
-      for (const [key, meta] of sessions) {
-        const page = await this.getPageFor(key)
-        const url = key === activeKey && activeUrl ? activeUrl : meta.url
-        if (url && url !== 'about:blank') await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 45000 }).catch(() => {})
-      }
-    }
-    return { debugMode: this.debugMode, headless: !this.debugMode, restarted: reopen }
+    if (reopen) await this.closeContext()
+    // The next browser task applies the mode; saved conversations stay closed.
+    return { debugMode: this.debugMode, headless: !this.debugMode, restarted: false }
   }
 
   async ensureContext(forceHeaded = false) {
@@ -139,7 +128,6 @@ export class BrowserDriver {
         '--disable-blink-features=AutomationControlled', '--no-first-run', '--no-default-browser-check',
         '--disable-infobars', '--disable-dev-shm-usage', '--ignore-certificate-errors',
       ]
-      if (this.settings.restoreSession) args.push('--restore-last-session')
       const headed = forceHeaded || this.debugMode
       this.context = await chromium.launchPersistentContext(this.profileDir, {
         headless: !headed, executablePath, viewport: { width: 1440, height: 900 },
@@ -167,15 +155,7 @@ export class BrowserDriver {
 
   async restoreSessions() {
     await this.loadRegistry()
-    if (!this.sessions.size) return { restored: 0 }
-    await this.ensureContext()
-    let restored = 0
-    for (const key of this.sessions.keys()) {
-      await this.getPageFor(key)
-      restored++
-    }
-    this.log(`[webbridge] restored ${restored} registered session page(s)`)
-    return { restored }
+    return { restored: 0, saved: this.sessions.size }
   }
 
   async getPageFor(sessionKey = DEFAULT_SESSION) {
@@ -183,7 +163,7 @@ export class BrowserDriver {
     let pageId = this.sessionPages.get(sessionKey)
     let page = pageId ? this.pages.get(pageId) : null
     if (page && !page.isClosed()) { this.lastPageId = pageId; return page }
-    page = await context.newPage()
+    page = context.pages().find(candidate => !candidate.isClosed() && candidate.url() === 'about:blank' && ![...this.pages.values()].includes(candidate)) || await context.newPage()
     pageId = `wb-${createHash('sha256').update(String(sessionKey)).digest('hex').slice(0, 20)}`
     this.pages.set(pageId, page)
     this.lastPageId = pageId
@@ -206,6 +186,15 @@ export class BrowserDriver {
     })
     await this.persistRegistry()
     return page
+  }
+
+  async releasePage(sessionKey = this.currentKey()) {
+    const pageId = this.sessionPages.get(sessionKey)
+    const page = this.pages.get(pageId)
+    if (!page || page.isClosed()) return
+    await this.persistRegistry()
+    await page.close().catch(error => this.log(`[webbridge] closing task page failed: ${error.message}`))
+    this.pages.delete(pageId)
   }
 
   currentKey() { return this.storage.getStore() || DEFAULT_SESSION }
@@ -406,14 +395,7 @@ export class BrowserDriver {
   async switchToHeadless({ allowCurrentOperation = false } = {}) {
     if (this.debugMode || !this.lastMode?.headed) return { changed: false, headless: !this.lastMode?.headed }
     if (this.active > (allowCurrentOperation ? 1 : 0) || this.generations.size) return { changed: false, headless: false, pending: true }
-    const saved = [...this.sessions.entries()].map(([key, value]) => [key, value.url])
     await this.closeContext()
-    await this.ensureContext(false)
-    for (const [key, url] of saved) {
-      if (!url || url === 'about:blank') continue
-      const page = await this.getPageFor(key)
-      await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 45000 }).catch(error => this.log(`[webbridge] headless restore failed for ${key}: ${error.message}`))
-    }
     return { changed: true, headless: true }
   }
   async stop() { await this.persistRegistry(); await this.closeContext(); return { ok: true } }

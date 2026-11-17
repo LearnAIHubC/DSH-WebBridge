@@ -86,6 +86,25 @@ test('the captured submitted turn accepts the real reply even when an app mentio
   assert.equal(answer.replyTurnKey, 'new-turn')
 })
 
+test('a completed short prompt with an inline app mention finishes before its submitted turn key was captured', async () => {
+  const reply = { ...fresh, userText: '检查子智能体以及 mcp Nexus DSH 等', completed: true, generationKnown: true }
+  const answer = await wait([reply, reply], {
+    baseline: { count: 0, text: '' }, expectedText: '检查子智能体以及mcp等', expectedTurnKey: '',
+    adapter: { matchReplyToUserTurn: true, requireCountGrowth: true, pluginName: 'Nexus DSH' },
+  })
+  assert.equal(answer.text, 'NEW_ANSWER')
+  assert.equal(answer.replyTurnKey, 'new-turn')
+})
+
+test('an inline app mention cannot make a different completed prompt belong to the current request', async () => {
+  const reply = { ...fresh, userText: '另一个问题 Nexus DSH', completed: true, generationKnown: true }
+  await assert.rejects(wait([reply], {
+    baseline: { count: 0, text: '' }, expectedText: '检查子智能体以及mcp等', expectedTurnKey: '',
+    adapter: { matchReplyToUserTurn: true, requireCountGrowth: true, pluginName: 'Nexus DSH' },
+    settings: { replyTimeoutMs: 25, pollIntervalMs: 1, stableSamples: 1 },
+  }), error => error.code === 'reply-timeout')
+})
+
 test('a captured submitted turn never accepts a different prompt on another user turn', async () => {
   await assert.rejects(wait([fresh], { expectedText: 'A_DIFFERENT_QUESTION', expectedTurnKey: 'another-turn', settings: { replyTimeoutMs: 25, pollIntervalMs: 1, stableSamples: 1 } }), error => error.code === 'reply-timeout')
 })

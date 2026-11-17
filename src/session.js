@@ -475,6 +475,7 @@ export class ChatSession {
         if (watchId && options.signal?.aborted && this.driver.stopGeneration) await this.driver.stopGeneration(watchId).catch(() => {})
         if (watchId && this.driver.endGenerationWatch) await this.driver.endGenerationWatch(watchId).catch(() => {})
         await uploaded?.release?.()
+        if (options.sessionKey) await this.driver.releasePage?.(queueKey)
       }
     }, queueKey)
   }

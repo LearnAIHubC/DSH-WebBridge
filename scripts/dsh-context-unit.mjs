@@ -233,6 +233,63 @@ test('committed context updates are scoped, de-duplicated and superseded by a fr
   assert.equal(next.context_updates, undefined)
 })
 
+test('repeated injected content is not queued again just because its ID changed', async () => {
+  const original = injection('first-id', 'plugin-rules', text('same rules'))
+  const duplicate = { ...original, id: 'new-id', source: { ...original.source, turn: 4, step: 9, timestamp: 12345 } }
+  const { scope, agents, captureOriginal } = fixture({ execute: () => ({ results: [{ result: { content: text('done') } }], additionalContexts: [duplicate] }) })
+  captureOriginal('session-A', [original])
+  const result = await scope.withSession('session-A', () => scope.execute('lookup', {}))
+  assert.equal(result.context_updates, undefined)
+  assert.deepEqual(agents[0].inbox.nextStep, [])
+})
+
+test('identical text from a different instruction scope remains a real update', async () => {
+  const original = { ...injection('scope-A', 'plugin-rules', text('same text')), source: { kind: 'plugin-rules', scope: '/project/A' } }
+  const update = { ...original, id: 'scope-B', source: { kind: 'plugin-rules', scope: '/project/B' } }
+  const { scope, captureOriginal } = fixture({ execute: () => ({ results: [{ result: { content: text('done') } }], additionalContexts: [update] }) })
+  captureOriginal('session-A', [original])
+  const result = await scope.withSession('session-A', () => scope.execute('lookup', {}))
+  assert.deepEqual(result.context_updates, [update])
+})
+
+test('a rule reverting to an earlier value is delivered once and replayed inbox entries stay quiet', async () => {
+  let version = 'A'
+  let counter = 0
+  const { scope, agents } = fixture({ execute: () => ({
+    results: [{ result: { content: text('done') } }],
+    additionalContexts: [{ ...injection(`update-${counter++}`, 'plugin-rules', text(version)), source: { kind: 'plugin-rules', scope: '/project' } }],
+  }) })
+  for (const next of ['A', 'B', 'A']) {
+    version = next
+    const result = await scope.withSession('session-A', () => scope.execute('lookup', {}))
+    assert.equal(result.context_updates.length, 1)
+    assert.deepEqual(result.context_updates[0].content, text(next))
+  }
+  const duplicate = await scope.withSession('session-A', () => scope.execute('lookup', {}))
+  assert.equal(duplicate.context_updates, undefined)
+  assert.equal(agents[0].inbox.nextStep.length, 3)
+})
+
+test('unchanged rules in the same directory do not create a repeated checkpoint', async () => {
+  const { scope, agents, prepare, captureOriginal, nativeRequest } = fixture()
+  const rules = injection('rules-1', 'agent-instructions', text('same rules'))
+  captureOriginal('session-A', [rules])
+  await prepare('session-A', 1, 1)
+  await nativeRequest('session-A', () => scope.execute('read', { file_path: '/project/src/a.js' }))
+  assert.equal(agents[0].inbox.nextStep.length, 1)
+  assert.match(agents[0].inbox.nextStep[0].source.fingerprint, /^[a-f0-9]{64}$/)
+  agents[0].inbox.nextStep.splice(0)
+  await prepare('session-A', 1, 2)
+  captureOriginal('session-A', [{ ...rules, id: 'rules-2' }])
+  const next = await nativeRequest('session-A', () => scope.execute('read', { file_path: '/project/src/b.js' }))
+  assert.equal(next.ok, true)
+  assert.equal(scope.hasContextCheckpoint('session-A'), false)
+  assert.deepEqual(agents[0].inbox.nextStep, [])
+  captureOriginal('session-A', [{ ...rules, id: 'rules-3', content: text('changed rules') }])
+  await nativeRequest('session-A', () => scope.execute('read', { file_path: '/project/src/c.js' }))
+  assert.equal(scope.hasContextCheckpoint('session-A'), true)
+})
+
 test('a successful file touch requests a real step boundary and never fabricates step/end', async () => {
   const { scope, agents, declarations, prepare, contextStore, calls, nativeRequest } = fixture()
   const reference = contextStore.capture({ sessionId: 'session-A', messages: [injection('a')] })

@@ -22,6 +22,7 @@ export class SetupBrowser {
     if (this.saved.auth) Object.assign(this.auth, this.saved.auth)
   }
   async observeAccount() {
+    if (this.driver.context === null || this.driver.pages?.size === 0) return this.saved.accountTier || 'unknown'
     const state = await this.driver.state()
     const url = String(state.url || '')
     if (url.startsWith('https://platform.openai.com/')) {

@@ -84,6 +84,8 @@ export async function waitForReply({ driver, adapter, baseline, settings, signal
   const replyParts = new Map()
   const normalize = (text) => String(text || '').replace(/\s+/g, ' ').trim()
   const expected = normalize(expectedText)
+  const pluginName = normalize(adapter.pluginName)
+  const withoutPlugin = text => text.split(pluginName).join('').replace(/\s+/g, '')
 
   while (Date.now() < deadline) {
     if (signal?.aborted) throw new BridgeError('aborted', 'Reply wait was aborted')
@@ -109,7 +111,10 @@ export async function waitForReply({ driver, adapter, baseline, settings, signal
     // Long answers can virtualize their user row. Once a turn is bound, its
     // assistant row remains sufficient to identify subsequent text snapshots.
     const actualText = normalize(state.userText)
-    const promptMatches = !expected || actualText.includes(expected) || (expected.length >= 80 && actualText.includes(expected.slice(0, 80)))
+    // ChatGPT can insert its app mention inside the submitted text before the
+    // new turn key is available. Compare that prompt without the known mention.
+    const promptMatches = !expected || actualText.includes(expected) || (expected.length >= 80 && actualText.includes(expected.slice(0, 80))) ||
+      Boolean(pluginName && actualText.includes(pluginName) && withoutPlugin(actualText).includes(withoutPlugin(expected)))
     // ChatGPT may replace its optimistic client turn key after persisting the
     // message. Rebind only when the visible new user prompt still identifies
     // this request; never pin forever to a transient post-click key.

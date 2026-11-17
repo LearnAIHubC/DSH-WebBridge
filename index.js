@@ -106,8 +106,8 @@ const TOOLS = [
   {
     name: 'webbridge_debug_mode',
     op: 'debugMode',
-    description: 'Toggle visible Chrome windows for all WebBridge sessions. Disabled means headless; enabled means headed debugging.',
-    parameters: { enabled: { type: 'boolean', required: true, description: 'true shows every WebBridge browser page; false returns to headless mode.' } },
+    description: 'Choose headed debugging or headless mode for the next browser task. Saved conversations open only when used.',
+    parameters: { enabled: { type: 'boolean', required: true, description: 'true shows browser tasks as they run; false runs them headless. Changing this setting does not open saved conversations.' } },
   },
   {
     name: 'webbridge_browser',

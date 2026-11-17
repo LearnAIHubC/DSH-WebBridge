@@ -122,6 +122,45 @@ test('WebBridge debug mode persists across driver restarts', async () => {
   } finally { await rm(dir, { recursive: true, force: true }) }
 })
 
+test('startup and mode switches keep saved conversations closed until a task uses them', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'wb-lazy-pages-'))
+  try {
+    const sessions = Object.fromEntries(Array.from({ length: 40 }, (_, index) => [`session-${index}`, { url: `https://chatgpt.com/c/saved-${index}` }]))
+    await writeFile(join(dir, 'sessions.json'), JSON.stringify({ version: 1, sessions }))
+    const driver = new BrowserDriver({ stateDir: dir })
+    driver.ensureContext = async () => { throw new Error('idle actions must not launch Chrome') }
+    assert.deepEqual(await driver.restoreSessions(), { restored: 0, saved: 40 })
+    await driver.setDebugMode(true)
+    assert.equal(driver.context, null)
+    assert.equal(driver.pages.size, 0)
+    let closed = 0
+    driver.context = { close: async () => { closed++ } }
+    await driver.setDebugMode(false)
+    assert.equal(closed, 1)
+    assert.equal(driver.context, null)
+    assert.equal(driver.sessions.size, 40)
+    driver.context = { close: async () => { closed++ } }
+    driver.lastMode = { headed: true }
+    assert.equal((await driver.switchToHeadless()).changed, true)
+    assert.equal(closed, 2)
+    assert.equal(driver.context, null)
+  } finally { await rm(dir, { recursive: true, force: true }) }
+})
+
+test('one task reuses Chrome’s initial blank page and closing it retains its conversation address', async () => {
+  const driver = new BrowserDriver({ stateDir: '' })
+  let closed = false
+  const page = { url: () => 'about:blank', isClosed: () => closed, on() {}, async close() { closed = true } }
+  driver.ensureContext = async () => ({ pages: () => [page], newPage: async () => { throw new Error('a second page is unnecessary') } })
+  driver.persistRegistry = async () => {}
+  assert.equal(await driver.getPageFor('session-A'), page)
+  driver.sessions.get('session-A').url = 'https://chatgpt.com/c/saved-A'
+  await driver.releasePage('session-A')
+  assert.equal(closed, true)
+  assert.equal(driver.pages.size, 0)
+  assert.equal((await driver.getSessionInfo('session-A')).url, 'https://chatgpt.com/c/saved-A')
+})
+
 test('native file upload preserves binary bytes, long text, display names, and cleans staging files', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'wb-files-test-'))
   try {

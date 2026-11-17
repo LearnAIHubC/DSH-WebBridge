@@ -21,6 +21,7 @@ import { join } from 'node:path'
 import { BridgeError, digest } from './envelope.js'
 import { snapshotDelta, streamPreview } from './stream-text.js'
 import { CONTEXT_TOOL_NAME } from './context.js'
+import { contextHash, contextHashes } from './context-identity.js'
 
 // Composer text and model context have separate transports. Only genuine user
 // input belongs in the composer; every injected message remains in the snapshot.
@@ -42,16 +43,17 @@ function contextNotice(reference, since) {
     (since ? '仅在仍保留此前完整上下文时使用 since_context_id，否则省略它重新读取全量。' : '')
 }
 
-const NON_REFRESH_CONTEXT_KINDS = new Set(['user', 'tool', 'time-context', 'webbridge-context-checkpoint'])
-
-/** Only injected instructions/environment can advance the context identity. */
-function meaningfulContextMessages(messages) {
-  return (messages || []).filter((message) => {
-    if (message?.role === 'system' || message?.role === 'developer') return true
-    if (message?.role !== 'user') return false
-    const kind = message.source?.kind
-    return typeof kind === 'string' && kind && !NON_REFRESH_CONTEXT_KINDS.has(kind)
-  })
+/**
+ * Tool schemas affect what the web model may call; per-call results and random
+ * call IDs do not. Hash only the stable catalog/instruction part.
+ */
+function meaningfulToolContext(toolHistory) {
+  if (!Array.isArray(toolHistory?.tools)) return null
+  const tools = new Map(toolHistory.tools.map(tool => [tool.name, tool]))
+  for (const update of toolHistory.updates || []) {
+    for (const tool of update.additions || []) tools.set(tool.name, tool)
+  }
+  return { tools: [...tools.values()].sort((a, b) => a.name.localeCompare(b.name)) }
 }
 
 /** Flatten DSH messages into one prompt the web chat can accept. */
@@ -428,9 +430,9 @@ export class WebChatAdapter {
       ? options.toolHistory ?? this.toolScope?.originalRequest?.(baseSessionId)?.toolHistory
       : undefined
     const contextWorkspace = nativeContext ? await this.toolScope?.workspaceFor?.(baseSessionId, options.signal) || {} : undefined
-    const nextContextDigest = nativeContext ? digest({
-      messages: meaningfulContextMessages(snapshotMessages),
-      toolHistory: contextToolHistory ?? null,
+    const nextContextDigest = nativeContext ? contextHash({
+      messages: contextHashes(snapshotMessages),
+      toolHistory: meaningfulToolContext(contextToolHistory),
       workspace: contextWorkspace,
     }) : null
     const previousContextReference = nativeContext && state.contextReference && this.contextStore.has(state.contextReference.context_id)

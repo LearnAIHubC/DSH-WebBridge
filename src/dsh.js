@@ -11,9 +11,11 @@
  * degrade to the global layer, never break the plugin.
  */
 
-import { createHash, randomUUID } from 'node:crypto'
+import { randomUUID } from 'node:crypto'
+import { dirname } from 'node:path'
 import { mentionedFiles } from './attachments.js'
 import { BridgeError } from './envelope.js'
+import { ContextIdentity, contextHash, contextHashes } from './context-identity.js'
 
 const CONTEXT_TOOL_NAME = 'dsh_get_context'
 const INSTRUCTION_TOUCH_TOOLS = new Set(['read', 'write', 'edit'])
@@ -25,10 +27,6 @@ function isInjectedContext(message) {
   if (message?.role === 'system' || message?.role === 'developer') return true
   return message?.role === 'user' && typeof message.source?.kind === 'string' &&
     !['user', 'tool', 'model'].includes(message.source.kind)
-}
-
-function contextKey(message) {
-  return `${message?.id || ''}:${createHash('sha256').update(JSON.stringify(message)).digest('hex')}`
 }
 
 function appendContextUpdates(outcome, updates) {
@@ -69,6 +67,7 @@ export function createToolScope(ctx, log = () => {}, { contextStore } = {}) {
   const pendingContexts = new Map()
   const seenContexts = new Map()
   const contextCheckpoints = new Map()
+  const checkpointScopes = new Map()
   const executionQueues = new Map()
   const requests = new Map()
   const requestSignals = new Map()
@@ -78,8 +77,16 @@ export function createToolScope(ctx, log = () => {}, { contextStore } = {}) {
   let lastSessionId = null
   // Only the native context transport binds a snapshot to its active request.
   // A store or model route alone must not alter the compatibility tool loop.
-  const needsCheckpoint = (agent, position, name, args, reference) => Boolean(contextStore && reference && agent?.id && position
-    && INSTRUCTION_TOUCH_TOOLS.has(name) && typeof args?.file_path === 'string' && args.file_path.trim())
+  const checkpointIdentity = (agent, args) => {
+    const scope = dirname(args.file_path.trim())
+    return { scope, hash: contextHash({ scope, contexts: contextHashes(originalRequests.get(String(agent.id))?.messages) }) }
+  }
+  const needsCheckpoint = (agent, position, name, args, reference) => {
+    if (!(contextStore && reference && agent?.id && position && INSTRUCTION_TOUCH_TOOLS.has(name)
+      && typeof args?.file_path === 'string' && args.file_path.trim())) return false
+    const identity = checkpointIdentity(agent, args)
+    return checkpointScopes.get(String(agent.id))?.get(identity.scope) !== identity.hash
+  }
   const checkpointMessage = sessionId => contextCheckpoints.get(String(sessionId))?.failure || CHECKPOINT_TEXT
   const failedCheckpoint = (agent, position, call, error, succeeded = true) => {
     const failure = (succeeded ? 'The preceding DSH tool completed successfully. Do not repeat it. '
@@ -95,9 +102,10 @@ export function createToolScope(ctx, log = () => {}, { contextStore } = {}) {
     if (!needsCheckpoint(agent, position, call.name, args, reference)) return
     const id = String(agent.id)
     if (contextCheckpoints.has(id)) return
+    const identity = checkpointIdentity(agent, args)
     const continuation = {
       id: randomUUID(), role: 'user',
-      source: { kind: 'webbridge-context-checkpoint', form: 'instructions', turn: position.turn, step: position.step, completedCallId: call.id },
+      source: { kind: 'webbridge-context-checkpoint', form: 'notice', scope: identity.scope, fingerprint: identity.hash, turn: position.turn, step: position.step, completedCallId: call.id },
       content: [{ type: 'text', text: CHECKPOINT_CONTINUATION }],
     }
     // The native action has already succeeded. A bridge-side enqueue failure
@@ -108,15 +116,18 @@ export function createToolScope(ctx, log = () => {}, { contextStore } = {}) {
     } catch (error) {
       return failedCheckpoint(agent, position, call, error)
     }
+    if (!checkpointScopes.has(id)) checkpointScopes.set(id, new Map())
+    checkpointScopes.get(id).set(identity.scope, identity.hash)
     queueContext(id, continuation)
+    return CHECKPOINT_TEXT
   }
   const queueContext = (sessionId, message) => {
     if (!sessionId || !isInjectedContext(message)) return
     const id = String(sessionId)
-    const key = contextKey(message)
-    if (seenContexts.get(id)?.has(key)) return
-    if (!pendingContexts.has(id)) pendingContexts.set(id, new Map())
-    pendingContexts.get(id).set(key, structuredClone(message))
+    if (!seenContexts.has(id)) seenContexts.set(id, new ContextIdentity())
+    if (!seenContexts.get(id).accept(message)) return
+    if (!pendingContexts.has(id)) pendingContexts.set(id, [])
+    pendingContexts.get(id).push(structuredClone(message))
   }
   const collectContextUpdates = (agent) => {
     if (!agent?.id) return []
@@ -125,31 +136,22 @@ export function createToolScope(ctx, log = () => {}, { contextStore } = {}) {
     // We do not run pre-step hooks or fabricate step/end to discover more.
     for (const message of agent.inbox?.nextStep || []) queueContext(id, message)
     const pending = pendingContexts.get(id)
-    if (!pending?.size) return []
-    if (!seenContexts.has(id)) seenContexts.set(id, new Set())
-    const seen = seenContexts.get(id)
-    const updates = []
-    for (const [key, message] of pending) {
-      if (seen.has(key)) continue
-      updates.push(message)
-      seen.add(key)
-    }
+    if (!pending?.length) return []
     pendingContexts.delete(id)
-    return updates
+    return pending
   }
   const admitAdditionalContexts = (agent, contexts) => {
     if (!agent?.id || !Array.isArray(contexts) || !contexts.length) return
-    const existing = new Set((agent.inbox?.nextStep || []).map(contextKey))
+    const id = String(agent.id)
+    if (!seenContexts.has(id)) seenContexts.set(id, new ContextIdentity())
+    const existing = new ContextIdentity(agent.inbox?.nextStep || [])
     const additions = []
     for (const message of contexts) {
-      const key = contextKey(message)
-      if (!existing.has(key)) {
-        additions.push(message)
-        existing.add(key)
-      }
+      if (!seenContexts.get(id).accept(message)) continue
+      if (existing.accept(message)) additions.push(message)
       // Keep the executor's complete messages; they need not use a known kind.
-      if (!pendingContexts.has(String(agent.id))) pendingContexts.set(String(agent.id), new Map())
-      pendingContexts.get(String(agent.id)).set(key, structuredClone(message))
+      if (!pendingContexts.has(id)) pendingContexts.set(id, [])
+      pendingContexts.get(id).push(structuredClone(message))
     }
     if (additions.length && typeof agent.inbox?.splice === 'function') {
       agent.inbox.splice('next-step', agent.inbox.nextStep.length, 0, additions)
@@ -224,7 +226,7 @@ export function createToolScope(ctx, log = () => {}, { contextStore } = {}) {
         // A newly prepared request is authoritative, including replacements and
         // removals. Its full snapshot supersedes queued updates from older steps.
         pendingContexts.delete(id)
-        seenContexts.set(id, new Set(messages.filter(isInjectedContext).map(contextKey)))
+        seenContexts.set(id, new ContextIdentity(messages.filter(isInjectedContext)))
         attachmentMessages.set(String(options.sessionId), messages.filter(message => message.role === 'user' &&
           Array.isArray(message.content) && message.content.some(block => block.type === 'file' || block.type === 'image')))
       }
@@ -256,6 +258,7 @@ export function createToolScope(ctx, log = () => {}, { contextStore } = {}) {
       pendingContexts.delete(id)
       seenContexts.delete(id)
       contextCheckpoints.delete(id)
+      checkpointScopes.delete(id)
       executionQueues.delete(id)
       contextStore?.deleteSession(id)
       inputWatchers.delete(id)
@@ -394,6 +397,7 @@ export function createToolScope(ctx, log = () => {}, { contextStore } = {}) {
       pendingContexts.delete(id)
       seenContexts.delete(id)
       contextCheckpoints.delete(id)
+      checkpointScopes.delete(id)
       executionQueues.delete(id)
       inputWatchers.delete(id)
       steps.delete(id)

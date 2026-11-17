@@ -166,7 +166,7 @@ function SettingsSection({ read, execute, debug }) {
       form.networkMode === 'custom' && field('customProxy', '代理地址', { placeholder: 'http://127.0.0.1:7897' }),
       toggle('autoReconnect', '断线自动重连', 'DSH 启动后恢复隧道，断线后自动重试。'),
       toggle('autoRefreshTools', '自动刷新工具', '检测 DSH 工具变化，等待当前网页会话完成后更新。'),
-      toggle('debugMode', '浏览器调试模式', '开启后所有 WebBridge 页面都显示窗口；关闭后全部使用无头模式。切换时需等待当前网页请求结束。'),
+      toggle('debugMode', '浏览器调试模式', '开启后，执行网页任务时显示窗口；历史会话按需打开。切换时需等待当前网页请求结束。'),
       field('healthPort', '健康检查端口', { type: 'number' }),
       field('workspaceId', 'ChatGPT 工作区 ID（可选）', { help: '只有一个工作区时自动选择；有多个工作区时填写目标 ID。' }),
       field('projectName', 'OpenAI 项目名称'),
