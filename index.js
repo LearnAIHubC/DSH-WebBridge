@@ -23,6 +23,7 @@ import { createToolScope } from './src/dsh.js'
 import { WebChatAdapter } from './src/provider.js'
 import { WebBridgeSetup, mountSetupService } from './src/setup.js'
 import { ChatgptModels } from './src/chatgpt-models.js'
+import { ContextStore, CONTEXT_TOOL_NAME, CONTEXT_INSTRUCTIONS, CONTEXT_PARAMETERS } from './src/context.js'
 import { writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 
@@ -137,15 +138,28 @@ export function apply(ctx, config = {}) {
   const models = new ChatgptModels({ settings, driver, log, onChange: () => ctx.emit('llm/models-updated', 'webbridge-chatgpt') })
   const session = new ChatSession({ settings, driver, log, modelControl: models })
   const ops = createOps({ settings, driver, session, log })
-  const toolScope = createToolScope(ctx, log)
+  const contextStore = new ContextStore()
+  const toolScope = createToolScope(ctx, log, { contextStore })
   const providers = new Map()
   const chatSessions = new Set([session])
   const adapters = new Set()
-  const bridge = new McpBridge({ ctx, settings, ops, log, toolScope })
-  const setup = new WebBridgeSetup({ settings, driver, bridge, log, models, onReinstall: () => {
-    for (const item of chatSessions) item.conversations.clear()
-    for (const item of adapters) item.sessionState.clear()
-  } })
+  const bridge = new McpBridge({ ctx, settings, ops, log, toolScope, contextStore })
+  const setup = new WebBridgeSetup({ settings, driver, bridge, log, models,
+    syncSession: async ({ sessionId, provider }) => {
+      if (toolScope.isSessionActive?.(sessionId)) throw new BridgeError('session-busy', '当前会话仍在生成，请等待本轮结束后再同步。')
+      const adapter = [...adapters].find(item => item.providerId === provider)
+      if (!adapter) throw new BridgeError('provider-unavailable', '当前网页模型没有可用的 WebBridge provider。')
+      const web = await adapter.syncSession(sessionId)
+      const context = toolScope.resetSession(sessionId)
+      const mcp = bridge.resetSessionBinding(sessionId)
+      log(`[webbridge] synchronized session ${sessionId} provider=${provider} mcp=${mcp.bindingsReset}`)
+      return { sessionId, provider, web, context, mcp, syncedAt: new Date().toISOString() }
+    },
+    onReinstall: () => {
+      for (const item of chatSessions) item.conversations.clear()
+      for (const item of adapters) item.sessionState.clear()
+    },
+  })
   mountSetupService(ctx, setup)
   ctx.effect(() => {
     setup.initialize().catch(error => log(`[webbridge:setup] ${error.message}`))
@@ -263,6 +277,20 @@ export function apply(ctx, config = {}) {
     })
   }
 
+  // Register in the real DSH registry so the connector uses the same scoped
+  // policy/executor as every other tool. Context references never select an
+  // arbitrary agent; the executor's agent must own the requested snapshot.
+  ctx.effect(() => ctx.tools.register(defineTool({
+    name: CONTEXT_TOOL_NAME,
+    description: CONTEXT_INSTRUCTIONS,
+    parameters: CONTEXT_PARAMETERS,
+    annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: false },
+    output: OUTPUT,
+    async execute(args, exec) {
+      return JSON.stringify(await toolScope.readContext(args, exec))
+    },
+  })))
+
   ctx.effect(() => {
     const dispose = ctx.tools.register(
       defineTool({
@@ -356,6 +384,8 @@ export function apply(ctx, config = {}) {
             log,
             parseReply: route.withTools ? parseReply : null,
             toolScope,
+            contextStore,
+            contextAvailable: () => bridge.catalog().some(tool => tool.name === CONTEXT_TOOL_NAME),
             modelCatalog: route.site === 'chatgpt' ? () => models.list() : undefined,
             accountTier: async () => {
               try { return await setup.browser.observeAccount() } catch { return setup.browser.saved.accountTier || 'unknown' }

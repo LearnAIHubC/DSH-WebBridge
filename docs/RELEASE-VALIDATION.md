@@ -2,7 +2,21 @@
 
 ## 0.2.2
 
-验证了动态菜单读取和原生推理等级接口。真实网页读取到十个组合，DSH 只显示两个模型；在所选推理等级下收到了 hi 回复。调试汇总也在运行期间成功读取。调试设置页的验收待补充。
+验证了动态菜单读取和原生推理等级接口。真实网页读取到十个组合，DSH 只显示两个模型；在所选推理等级下收到了 hi 回复。调试汇总也在运行期间成功读取。
+
+### 浏览器调试设置页
+
+本轮只补充此前未完成的浏览器调试设置页验收。客户端连线检查确认页面选择、记录筛选、只看错误和警告、控制台、网络请求、调试汇总与截图、清空记录均接到 `webbridgeSetup.debug`；截图使用返回的 `data:image/png;base64,...` 直接展示，清空按钮按当前调试类型携带 `clear: true`。
+
+在运行中的 0.2.2 WebBridge 上选择一个非当前会话的已登录 ChatGPT 首页，执行与设置页相同的 `driver.inspect('debug', { pageId, clear: true, limit: 50 })` 链路：console、network、dialogs 三类结果均为 `total: 0`，同时成功生成 PNG 截图。截图实测为 1440×900、78,078 字节；再经过设置服务的截图包装路径验证，成功转换为 `data:image/png;base64,...`，解码后仍为 78,078 字节。截图与清空通过。
+
+macOS 本机未授予 `osascript` 辅助功能权限，因此本轮没有使用系统级鼠标模拟点击 DSH 窗口；验收使用设置页实际调用的同一调试服务/driver 链路，并核对了客户端按钮与截图展示连线。
+
+### 会话同步
+
+新增模型选择器旁的会话同步按钮，使用 DSH 0.2.2 的 `conversation.input.right` 官方 slot，并只在当前选择为 `webbridge-*` provider 时显示。点击会携带当前 DSH `sessionId` 和 provider 调用 `webbridgeSetup.sync`：先重建当前网页会话，再清除 provider 增量游标、该 DSH 会话的 context snapshot/checkpoint，以及所有仍指向该会话的 MCP 路由绑定；下一条消息重新读取完整上下文。
+
+`session-sync-unit` 覆盖同步请求校验、provider 新会话、DSH context 清理、MCP binding 重置、remote 委托，以及生成后的 `client.js` 实际 slot 注册和按钮显示条件。完整单元套件为 208 项（207 通过、1 项 Windows 专用测试跳过、0 失败），浏览器回归 3/3 通过。独立 Browser Operator 访问当前 DSH Web 地址时被 Host 鉴权页拦截，因此没有把“视觉点击”写成已完成；客户端产物的注册与点击 remote 参数已由运行级单测验证。
 
 ## 0.2.1 macOS 验证
 
@@ -46,6 +60,6 @@ Intel Mac 的安装包选择经过单元测试，尚未在 Intel 硬件上实测
 
 付费模型菜单及其他操作系统未验证。正式 Never Key 的控制台创建流程本次未重新执行，保留当前已配置资源；升级与复用逻辑通过单元测试。
 
-多 Page 可以并发使用。当前官方 MCP 请求尚未提供经过验证的 DSH 会话标识，多个网页任务同时活跃时工具调用会明确返回 ambiguous-tool-scope。需要工具的任务应串行运行。
+多 Page 可以并发使用。MCP 已覆盖两代协议：旧式 `initialize + Mcp-Session-Id` 用 `dsh_get_context.context_id` 建立连接绑定；`2026-07-28` 的 `server/discover` / 无 session 路径在每个后续 DSH tool call 中使用 `dsh_context_id` 作为显式 handle，并在进入 DSH executor 前剥离。单元回归已覆盖两个活跃 DSH 会话分别通过旧/新协议路由、无 handle 拒绝猜测、stale handle 拒绝以及业务参数不含路由字段。真实双网页会话并发仍需发布前补充现场验收。
 
 发布采用独立导出目录建立干净 Git 历史，保留本机原工作区及原历史。发布内容排除 `.tools`、Chrome Profile、运行日志、会话数据和加密密钥；不推送原有历史中的代理工具与配置。

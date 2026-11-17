@@ -24,6 +24,7 @@ export class ChatSession {
     this.last = { site: null, count: 0, text: '', at: null }
     /** sessionKey -> { url } for the DSH-session <-> web-conversation mapping. */
     this.conversations = new Map()
+    this.legacyConversationGeneration = randomUUID()
   }
 
   enqueue(fn, sessionKey = this.sessionId) {
@@ -193,6 +194,12 @@ export class ChatSession {
     prepared = await this.prepareAttachments(site, options, menu?.quota)
     if (prepared.reset) {
       await this.startNewChat(site, options)
+      const reset = await options.onConversationReset?.({ reason: 'attachment-quota' })
+      if (typeof reset?.text === 'string') text = reset.text
+      if (!String(text ?? '').trim()) throw new BridgeError('empty-message', 'Cannot submit an empty web-chat message.')
+      // Resetting the page invalidates its old reply baseline as well as its
+      // context. Never let the abandoned conversation satisfy this request.
+      if (options.baseline) Object.assign(options.baseline, await readReplyState(this.driver, adapter, options.signal))
       await this.driver.fillLong(adapter.inputSelector, text, { signal: options.signal })
       await this.ensurePlugin(adapter, {})
     }
@@ -211,7 +218,13 @@ export class ChatSession {
       }
     }
     if (!clicked) await this.driver.press('Enter', { signal: options.signal })
-    if (site !== 'chatgpt') return
+    const delivery = {
+      submittedText: text,
+      contextAttachmentDelivered: prepared.contextAttachmentDelivered === true,
+      contextAttachmentSkipped: prepared.contextAttachmentSkipped === true,
+      conversationReset: prepared.reset === true,
+    }
+    if (site !== 'chatgpt') return { ...delivery, uploadLease: prepared.lease }
 
     const expression = `(() => {
       const editors = Array.from(document.querySelectorAll(${JSON.stringify(adapter.inputSelector)}))
@@ -229,7 +242,7 @@ export class ChatSession {
       const state = (await this.driver.eval(expression, { signal: options.signal }))?.result
       if (typeof state?.composerText === 'string' && !state.composerText.trim()) {
         const sent = await readReplyState(this.driver, adapter, options.signal).catch(() => null)
-        return { userTurnKey: sent?.userTurnKey && !sent.userTurnKey.startsWith('fallback-') && sent.userTurnKey !== options.baseline?.userTurnKey ? sent.userTurnKey : '', url: sent?.url || '', uploadLease: prepared.lease }
+        return { ...delivery, userTurnKey: sent?.userTurnKey && !sent.userTurnKey.startsWith('fallback-') && sent.userTurnKey !== options.baseline?.userTurnKey ? sent.userTurnKey : '', url: sent?.url || '', uploadLease: prepared.lease }
       }
       await new Promise((resolve) => setTimeout(resolve, 100))
     } while (Date.now() < deadline)
@@ -238,7 +251,7 @@ export class ChatSession {
   }
 
   async prepareAttachments(site, options, menuQuota) {
-    if (!options.attachment && !options.attachments?.length) return {}
+    if (!options.attachment && !options.attachments?.length) return { contextAttachmentDelivered: false, contextAttachmentSkipped: false }
     let lease
     let attempted = false
     try {
@@ -248,18 +261,18 @@ export class ChatSession {
       attempted = true
       if (this.driver.attachFiles) {
         lease = await this.driver.attachFiles([...(options.attachment ? [options.attachment] : []), ...(options.attachments || [])], { signal: options.signal })
-      } else if (options.attachment && this.driver.attachTextFile) {
+      } else if (options.attachment && !options.attachments?.length && this.driver.attachTextFile) {
         const attached = await this.driver.attachTextFile(options.attachment.name, options.attachment.content, { signal: options.signal })
         if (attached?.ok === false) throw new BridgeError('attachment-upload-failed', '网页没有接受系统上下文附件。')
-      }
+      } else throw new BridgeError('attachment-upload-unavailable', 'The browser driver cannot upload these attachments.')
       await this.waitUploads(options.signal)
-      return { lease }
+      return { lease, contextAttachmentDelivered: Boolean(options.attachment), contextAttachmentSkipped: false }
     } catch (error) {
       await lease?.release?.()
       if (error.code !== 'attachment-quota-exceeded' || options.attachments?.length || !options.attachment) throw error
       this.log('[webbridge] attachment quota reached; skipping system TXT and preserving user text with the app')
       await this.dismissUploadNotice()
-      return { reset: attempted }
+      return { reset: attempted, contextAttachmentDelivered: false, contextAttachmentSkipped: true }
     }
   }
 
@@ -295,7 +308,6 @@ export class ChatSession {
       let uploaded
       let watchId
       try {
-      if ((options.attachment || options.attachments?.length) && this.driver.prepareUploads) await this.driver.prepareUploads()
       const site = options.site || this.settings.site
       const adapter = this.adapter(site)
       if (!adapter.inputSelector) {
@@ -305,10 +317,28 @@ export class ChatSession {
       // sessionId, we remember the concrete chat URL and reopen it next time
       // instead of appending to whatever tab happens to be active.
       const key = options.sessionKey ? `${site}:${options.sessionKey}` : null
-      const known = key ? (this.conversations.get(key) || await this.driver.getSessionInfo?.(key) || null) : null
+      let known = key ? (this.conversations.get(key) || await this.driver.getSessionInfo?.(key) || null) : null
+      // The driver also records navigation to a site root. That is not a
+      // retained conversation and must not reuse an old context generation.
+      if (known?.url && !persistedConversationURL(site, known.url, this.sitePreset(site).url)) known = { ...known, url: '' }
+      let newConversation = known?.needsContext === true
+      let generation = known?.generation || (key ? randomUUID() : this.legacyConversationGeneration)
       if (key && known) this.conversations.set(key, known)
       if (known?.url || known?.pending) {
-        const current = await this.driver.state()
+        let current = await this.driver.state()
+        // A pending blank conversation can survive a restart without a URL.
+        // Its newly recreated browser page starts at about:blank, so restore
+        // the site and verify a fresh chat before preparing the first message.
+        if (key && known.pending && !known.url && !String(current?.url || '').includes(safeHost(this.sitePreset(site).url))) {
+          await this.ensurePage(site, options)
+          await this.startNewChat(site, options)
+          current = await this.driver.state()
+          generation = randomUUID()
+          newConversation = true
+          known = { ...known, url: '', pending: true, generation, needsContext: true, userTurnKey: '' }
+          this.conversations.set(key, known)
+          await this.driver.updateSessionInfo?.(key, known)
+        }
         if (known.pending && persistedConversationURL(site, current?.url, this.sitePreset(site).url)) { known.url = current.url; known.pending = false }
         if (known.url && current?.url !== known.url) await this.driver.open(known.url, { headed: options.headed, signal: options.signal })
       } else {
@@ -317,9 +347,47 @@ export class ChatSession {
         // exactly one web conversation. Switch to the right site first — the
         // shortcut only works on the site's own page.
         await this.ensurePage(site, options)
-        if (key) await this.startNewChat(site, options)
+        if (key) {
+          await this.startNewChat(site, options)
+          newConversation = true
+          generation = randomUUID()
+          known = { url: '', pending: true, generation, needsContext: true }
+          this.conversations.set(key, known)
+          await this.driver.updateSessionInfo?.(key, { ...known, userTurnKey: '', title: '' })
+        }
       }
       await this.assertNotRestricted(site, options)
+
+      // The provider can choose a full snapshot or a continuation only after
+      // this method has selected the actual web conversation. Page hydration
+      // and restoring the same URL do not themselves invalidate context.
+      let conversation = {
+        key, conversationKey: key, site,
+        url: known?.url || String((await this.driver.state())?.url || ''),
+        newConversation, reset: newConversation,
+        reason: newConversation ? known?.contextResetReason || 'new-chat' : 'resume',
+        generation,
+      }
+      const sendOptions = { ...options }
+      const prepareMessage = async (info) => {
+        conversation = info
+        await options.onConversation?.(info)
+        const update = await options.prepareMessage?.(info)
+        if (update == null) return
+        if (typeof update === 'string') { text = update; return }
+        if (typeof update !== 'object' || Array.isArray(update)) {
+          throw new BridgeError('invalid-message-preparation', 'prepareMessage must return text or a message object.')
+        }
+        if (Object.hasOwn(update, 'text')) {
+          if (typeof update.text !== 'string') throw new BridgeError('invalid-message-preparation', 'Prepared message text must be a string.')
+          text = update.text
+        }
+        for (const field of ['attachment', 'attachments']) {
+          if (Object.hasOwn(update, field)) sendOptions[field] = update[field]
+        }
+      }
+      await prepareMessage(conversation)
+      if ((sendOptions.attachment || sendOptions.attachments?.length) && this.driver.prepareUploads) await this.driver.prepareUploads()
 
       const baseline = await readReplyState(this.driver, adapter, options.signal)
       // A restored page may not have hydrated yet. Keep the last known user
@@ -327,16 +395,35 @@ export class ChatSession {
       if (!baseline.userTurnKey && known?.userTurnKey) baseline.userTurnKey = known.userTurnKey
       const started = Date.now()
       watchId = site === 'chatgpt' ? randomUUID() : undefined
-      const submitted = await this.submit(text, site, adapter, { ...options, baseline, watchId, selectPlugin: Boolean(adapter.pluginName && !known?.url) })
+      const submitted = await this.submit(text, site, adapter, {
+        ...sendOptions, baseline, watchId, selectPlugin: Boolean(adapter.pluginName && !known?.url),
+        onConversationReset: async ({ reason }) => {
+          newConversation = true
+          generation = randomUUID()
+          known = { url: '', pending: true, generation, needsContext: true, contextResetReason: reason }
+          if (key) {
+            this.conversations.set(key, known)
+            await this.driver.updateSessionInfo?.(key, { ...known, userTurnKey: '', title: '' })
+          } else this.legacyConversationGeneration = generation
+          const info = { key, conversationKey: key, site, url: String((await this.driver.state())?.url || ''), newConversation: true, reset: true, reason, generation }
+          await options.onConversationReset?.(info)
+          await prepareMessage(info)
+          // The upload has already failed. A rewritten first message may
+          // carry a full-context reference, but no attachment is retried here.
+          return { text }
+        },
+      })
       uploaded = submitted?.uploadLease
+      if (typeof submitted?.submittedText === 'string') text = submitted.submittedText
       if (key) {
         const url = submitted?.url || ''
         const persisted = persistedConversationURL(site, url, this.sitePreset(site).url)
-        const savedConversation = { ...known, ...(persisted ? { url } : {}), pending: !persisted, userTurnKey: submitted?.userTurnKey || '' }
+        const savedConversation = { ...known, ...(persisted ? { url } : {}), pending: !persisted, generation, needsContext: false, contextResetReason: '', userTurnKey: submitted?.userTurnKey || '' }
         this.conversations.set(key, savedConversation)
-        if (persisted) await this.driver.updateSessionInfo?.(key, { url })
+        if (persisted) await this.driver.updateSessionInfo?.(key, { url, generation, pending: false, needsContext: false, contextResetReason: '' })
       }
-      options.onSubmitted?.(submitted || {})
+      const submission = { ...(submitted || {}), conversation, conversationReset: newConversation || submitted?.conversationReset === true }
+      options.onSubmitted?.(submission)
 
       const reply = await waitForReply({
         driver: this.driver,
@@ -375,10 +462,15 @@ export class ChatSession {
             if (title) entry.title = title
           }
           this.conversations.set(key, entry)
-          if (entry.url) await this.driver.updateSessionInfo?.(key, { url: entry.url, title: entry.title || '' })
+          if (entry.url) await this.driver.updateSessionInfo?.(key, { url: entry.url, title: entry.title || '', generation, pending: false, needsContext: false, contextResetReason: '' })
         } catch {}
       }
-      return { site, reply: reply.text, title, ...reply, totalMs: Date.now() - started }
+      return { site, reply: reply.text, title, ...reply, totalMs: Date.now() - started,
+        submittedText: text, conversation,
+        conversationReset: submission.conversationReset,
+        contextAttachmentDelivered: submitted?.contextAttachmentDelivered === true,
+        contextAttachmentSkipped: submitted?.contextAttachmentSkipped === true,
+      }
       } finally {
         if (watchId && options.signal?.aborted && this.driver.stopGeneration) await this.driver.stopGeneration(watchId).catch(() => {})
         if (watchId && this.driver.endGenerationWatch) await this.driver.endGenerationWatch(watchId).catch(() => {})
@@ -495,12 +587,24 @@ export class ChatSession {
   }
 
   async newChat(options = {}) {
+    const queueKey = options.sessionKey ? `${options.site || this.settings.site}:${options.sessionKey}` : this.sessionId
     return this.enqueue(async () => {
       const site = options.site || this.settings.site
-      const url = await this.startNewChat(site, options)
+      const result = await this.startNewChat(site, options)
+      const key = options.sessionKey ? `${site}:${options.sessionKey}` : null
+      const generation = randomUUID()
+      const entry = { url: '', pending: true, generation, needsContext: true, contextResetReason: 'manual-reset', userTurnKey: '', title: '' }
+      if (key) {
+        this.conversations.set(key, entry)
+        await this.driver.updateSessionInfo?.(key, entry)
+      } else this.legacyConversationGeneration = generation
+      const url = String((await this.driver.state())?.url || result || '')
+      const conversation = { key, conversationKey: key, site, url, newConversation: true, reset: true, reason: 'manual-reset', generation }
+      await options.onConversationReset?.(conversation)
+      await options.onConversation?.(conversation)
       this.last = { site, count: 0, text: '', at: Date.now() }
-      return { site, url, adapterSource: this.adapter(site).source }
-    })
+      return { site, url, adapterSource: this.adapter(site).source, conversation }
+    }, queueKey)
   }
 }
 

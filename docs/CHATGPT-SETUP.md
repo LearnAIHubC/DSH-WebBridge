@@ -31,9 +31,9 @@ DSH 原始用户附件在模型适配器投影前保留，通过附件服务取�
 
 发送顺序为填写用户文字、从加号菜单检查额度并选择 Nexus DSH、最后上传附件，然后发送。只含系统上下文 TXT 时，额度耗尽会跳过 TXT 并继续发送用户文字；用户图片或文件受限时显示 OpenAI 原提示，保留重试时间，不静默省略附件。临时文件保留到本轮结束。
 
-续聊回到同一网页会话，只发送新增用户内容。生成中的正文以 text-delta 进入 DSH；完成后用网页正文重建 Markdown。默认一直等待到停止按钮消失、页面回到空闲状态，保留用户取消和登录错误。
+续聊回到同一网页会话，只发送新增用户内容。生成中的正文以 text-delta 进入 DSH；完成后用网页正文重建 Markdown。默认一直等待到停止按钮消失、页面回到空闲状态，保留用户取消和登录错误。若网页报错、插件重载或旧会话恢复后怀疑两边状态不一致，可点模型选择器旁的「同步」：当前网页线程会重建，provider 增量游标、DSH context snapshot 和该 DSH 会话对应的 MCP 路由绑定会一起失效；下一条消息按当前 DSH 历史重新加载完整上下文。
 
-同一 DSH 会话内串行，不同会话通过各自的 Page 并行；设置页操作使用独立的默认 Page。当前官方 MCP 请求尚未提供经过验证的会话标识：多个网页请求同时活跃时，DSH 工具调用会明确返回 ambiguous-tool-scope，避免在错误的会话中执行。需要工具的网页任务请串行运行。
+同一 DSH 会话内串行，不同会话通过各自的 Page 并行；设置页操作使用独立的默认 Page。MCP 同时支持旧式有状态连接和 `2026-07-28` 无会话调用：ChatGPT 读取 `dsh_get_context` 时由 `context_id` 解析真实 DSH `sessionId`；旧协议把这个映射记在 MCP session，新协议则在后续 DSH 工具的 MCP schema 中带 `dsh_context_id`，路由完成后立即剥离，真实 DSH 工具不会收到该字段。没有已验证路由 handle 且同时存在多个 DSH 请求时仍返回 `ambiguous-tool-scope`。
 
 WebBridge 不会补丁 BrowserOperator。上传、点击、输入和页面读取全部由插件自己的 `BrowserDriver` 完成；Codex 的 BrowserOperator 保持独立运行。
 

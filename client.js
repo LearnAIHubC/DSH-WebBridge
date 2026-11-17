@@ -30,6 +30,15 @@ function parseSetupState(value) {
   if ('runtimeApiKey' in value || 'runtimeApiKey' in value.tunnel) throw new Error('密钥不能返回到设置状态。')
   return value
 }
+function parseSyncRequest(value) {
+  if (!value || typeof value !== 'object') throw new Error('同步请求格式无效。')
+  const sessionId = typeof value.sessionId === 'string' ? value.sessionId.trim() : ''
+  const provider = typeof value.provider === 'string' ? value.provider.trim() : ''
+  if (!sessionId || sessionId.length > 500) throw new Error('同步请求缺少有效的 sessionId。')
+  if (!provider.startsWith('webbridge-') || provider.length > 200) throw new Error('当前会话不是 WebBridge 网页模型。')
+  return { sessionId, provider }
+}
+
 function parseDebugQuery(value) {
   if (!value || !['console', 'network', 'debug', 'pages'].includes(value.action)) throw new Error('未知的浏览器调试操作。')
   const query = { action: value.action }
@@ -57,6 +66,7 @@ const setupRemote = {
     { id: `${SETUP_PACKAGE}#${SETUP_SERVICE}/read`, service: SETUP_SERVICE, namespace: SETUP_SERVICE, method: 'read', invocation: { kind: 'direct' }, parameters: [], result: stateCodec },
     { id: `${SETUP_PACKAGE}#${SETUP_SERVICE}/execute`, service: SETUP_SERVICE, namespace: SETUP_SERVICE, method: 'execute', invocation: { kind: 'direct' }, parameters: [{ name: 'command', wire: 'command', source: 'json', codec: codec('SetupCommand', parseSetupCommand) }], result: stateCodec },
     { id: `${SETUP_PACKAGE}#${SETUP_SERVICE}/debug`, service: SETUP_SERVICE, namespace: SETUP_SERVICE, method: 'debug', invocation: { kind: 'direct' }, parameters: [{ name: 'query', wire: 'query', source: 'json', codec: codec('DebugQuery', parseDebugQuery) }], result: codec('DebugResult', value => value) },
+    { id: `${SETUP_PACKAGE}#${SETUP_SERVICE}/sync`, service: SETUP_SERVICE, namespace: SETUP_SERVICE, method: 'sync', invocation: { kind: 'direct' }, parameters: [{ name: 'request', wire: 'request', source: 'json', codec: codec('SyncRequest', parseSyncRequest) }], result: codec('SyncResult', value => value) },
   ],
 }
 
@@ -79,6 +89,39 @@ const css = `
 `
 const statusNames = { 'not-configured': '未配置', stopped: '已断开', starting: '启动中', 'installing-runtime': '安装隧道客户端', connecting: '连接中', connected: '已连接', reconnecting: '正在重连', error: '连接失败', 'authentication-error': '密钥需要更新' }
 const authNames = { unknown: '尚未检查', ready: '已登录', 'needs-login': '请完成登录' }
+
+function SyncIcon({ spinning = false }) {
+  return h('svg', { viewBox: '0 0 20 20', width: 15, height: 15, fill: 'none', stroke: 'currentColor', strokeWidth: 1.7, strokeLinecap: 'round', strokeLinejoin: 'round', 'aria-hidden': true,
+    style: spinning ? { animation: 'wb-sync-spin .8s linear infinite' } : undefined },
+  h('path', { d: 'M15.7 6.2A6.4 6.4 0 0 0 4.2 5.6' }), h('path', { d: 'M4.2 2.9v2.8H7' }),
+  h('path', { d: 'M4.3 13.8a6.4 6.4 0 0 0 11.5.6' }), h('path', { d: 'M15.8 17.1v-2.8H13' }))
+}
+
+function SessionSyncButton({ directory, loadDirectory, syncSession }) {
+  const state = React.useSyncExternalStore(directory.subscribe, directory.getSnapshot, directory.getSnapshot)
+  const [pending, setPending] = React.useState(false)
+  const [result, setResult] = React.useState('')
+  const [error, setError] = React.useState('')
+  React.useEffect(() => { loadDirectory?.() }, [loadDirectory])
+  const provider = state?.current?.provider || ''
+  if (!provider.startsWith('webbridge-')) return null
+  const run = async () => {
+    if (pending) return
+    setPending(true); setResult(''); setError('')
+    try {
+      await syncSession(provider)
+      setResult('已同步')
+    } catch (reason) { setError(reason?.message || String(reason)) }
+    finally { setPending(false) }
+  }
+  const label = pending ? '同步中' : error ? '重试' : result || '同步'
+  const title = error || '重新同步当前 DSH 会话、网页会话和 MCP 上下文。下一条消息会重新加载完整上下文。'
+  return h(React.Fragment, null,
+    h('style', null, '@keyframes wb-sync-spin{to{transform:rotate(360deg)}}'),
+    h('button', { type: 'button', onClick: run, disabled: pending, title, 'aria-label': error ? `同步失败：${error}` : '同步网页会话',
+      style: { display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: 5, height: 30, padding: '0 8px', border: '1px solid rgba(128,128,128,.24)', borderRadius: 7, background: 'transparent', color: 'inherit', font: 'inherit', fontSize: 12, lineHeight: 1, cursor: pending ? 'default' : 'pointer', opacity: pending ? .55 : 1, whiteSpace: 'nowrap' } },
+    h(SyncIcon, { spinning: pending }), label))
+}
 
 function BrowserDebugPanel({ readDebug }) {
   const [result, setResult] = React.useState(null)
@@ -216,10 +259,24 @@ function apply(ctx) {
     const read = () => unwrap(scope.remote.webbridgeSetup.read())
     const execute = command => unwrap(scope.remote.webbridgeSetup.execute(command))
     const debug = query => unwrap(scope.remote.webbridgeSetup.debug(query))
+    const sync = request => unwrap(scope.remote.webbridgeSetup.sync(request))
     scope.slots.inject('settings.section', () => scope.slots.register({
       name: 'settings.section', id: 'webbridge-chatgpt-settings', order: 21,
       label: () => 'ChatGPT 网页版', inject: () => ({ read, execute, debug }),
     }, SettingsSection))
+    scope.inject(['modelDirectories'], ui => {
+      ui.slots.inject('conversation.input.right', () => ui.slots.register({
+        name: 'conversation.input.right', id: 'webbridge-session-sync', order: -1000,
+        inject: sessionId => {
+          const directory = ui.modelDirectories.directoryFor(sessionId)
+          return {
+            directory: directory.store,
+            loadDirectory: () => directory.load().catch(() => {}),
+            syncSession: provider => sync({ sessionId: String(sessionId), provider }),
+          }
+        },
+      }, SessionSyncButton))
+    })
   })
 }
 

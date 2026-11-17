@@ -29,6 +29,15 @@ export function parseSetupState(value) {
   if ('runtimeApiKey' in value || 'runtimeApiKey' in value.tunnel) throw new Error('密钥不能返回到设置状态。')
   return value
 }
+export function parseSyncRequest(value) {
+  if (!value || typeof value !== 'object') throw new Error('同步请求格式无效。')
+  const sessionId = typeof value.sessionId === 'string' ? value.sessionId.trim() : ''
+  const provider = typeof value.provider === 'string' ? value.provider.trim() : ''
+  if (!sessionId || sessionId.length > 500) throw new Error('同步请求缺少有效的 sessionId。')
+  if (!provider.startsWith('webbridge-') || provider.length > 200) throw new Error('当前会话不是 WebBridge 网页模型。')
+  return { sessionId, provider }
+}
+
 export function parseDebugQuery(value) {
   if (!value || !['console', 'network', 'debug', 'pages'].includes(value.action)) throw new Error('未知的浏览器调试操作。')
   const query = { action: value.action }
@@ -56,5 +65,6 @@ export const setupRemote = {
     { id: `${SETUP_PACKAGE}#${SETUP_SERVICE}/read`, service: SETUP_SERVICE, namespace: SETUP_SERVICE, method: 'read', invocation: { kind: 'direct' }, parameters: [], result: stateCodec },
     { id: `${SETUP_PACKAGE}#${SETUP_SERVICE}/execute`, service: SETUP_SERVICE, namespace: SETUP_SERVICE, method: 'execute', invocation: { kind: 'direct' }, parameters: [{ name: 'command', wire: 'command', source: 'json', codec: codec('SetupCommand', parseSetupCommand) }], result: stateCodec },
     { id: `${SETUP_PACKAGE}#${SETUP_SERVICE}/debug`, service: SETUP_SERVICE, namespace: SETUP_SERVICE, method: 'debug', invocation: { kind: 'direct' }, parameters: [{ name: 'query', wire: 'query', source: 'json', codec: codec('DebugQuery', parseDebugQuery) }], result: codec('DebugResult', value => value) },
+    { id: `${SETUP_PACKAGE}#${SETUP_SERVICE}/sync`, service: SETUP_SERVICE, namespace: SETUP_SERVICE, method: 'sync', invocation: { kind: 'direct' }, parameters: [{ name: 'request', wire: 'request', source: 'json', codec: codec('SyncRequest', parseSyncRequest) }], result: codec('SyncResult', value => value) },
   ],
 }

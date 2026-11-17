@@ -20,6 +20,28 @@ import { writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { BridgeError, digest } from './envelope.js'
 import { snapshotDelta, streamPreview } from './stream-text.js'
+import { CONTEXT_TOOL_NAME } from './context.js'
+
+// Composer text and model context have separate transports. Only genuine user
+// input belongs in the composer; every injected message remains in the snapshot.
+function directUserMessage(message) {
+  return message?.role === 'user' && (!message.source?.kind || message.source.kind === 'user')
+}
+
+function rawMessageText(message) {
+  if (typeof message?.content === 'string') return message.content
+  return (Array.isArray(message?.content) ? message.content : [])
+    .map(block => typeof block === 'string' ? block : block?.type === 'text' ? String(block.text || '') : '')
+    .filter(Boolean).join('\n')
+}
+
+function contextGuidance(reference, prompt, since) {
+  const args = { context_id: reference.context_id, ...(since ? { since_context_id: since } : {}) }
+  return `请先调用 Nexus DSH 的 ${CONTEXT_TOOL_NAME}，参数为 ${JSON.stringify(args)}。` +
+    '读取所有分页，直到 completeness.complete=true，再处理下面的任务。项目地址、有效指令和上下文注入都在工具结果中。后续调用 DSH 工具时，如果工具参数里有 dsh_context_id，始终填当前 context_id；这是 MCP 路由字段，DSH 工具本身不会收到它。' +
+    (since ? '仅在仍保留此前完整上下文时使用 since_context_id，否则省略它重新读取全量。' : '') +
+    `\n\n${prompt || 'DSH 上下文已更新。请继续上一任务，已经完成的工具操作不要重复执行。'}`
+}
 
 /** Flatten DSH messages into one prompt the web chat can accept. */
 export function flattenMessages(messages) {
@@ -73,7 +95,7 @@ export function renderTools(tools) {
   ].join('\n')
 }
 
-/** DSH injects harness metadata as ordinary messages; never forward it. */
+/** Legacy composer filters only; native MCP snapshots bypass these filters. */
 const HARNESS_NOISE = [
   'Time sampled while preparing',
   'Browser time zone for this request',
@@ -150,7 +172,7 @@ export function deriveTitle(messages) {
 }
 
 export class WebChatAdapter {
-  constructor({ providerId, displayName, modelId, session, settings, log, parseReply, toolScope, accountTier, modelCatalog }) {
+  constructor({ providerId, displayName, modelId, session, settings, log, parseReply, toolScope, contextStore, contextAvailable, accountTier, modelCatalog }) {
     this.providerId = providerId
     this.displayName = displayName
     this.modelId = modelId
@@ -159,6 +181,8 @@ export class WebChatAdapter {
     this.log = log || (() => {})
     this.parseReply = parseReply
     this.toolScope = toolScope
+    this.contextStore = contextStore
+    this.contextAvailable = contextAvailable
     this.accountTier = accountTier
     this.modelCatalog = modelCatalog
     /**
@@ -175,10 +199,28 @@ export class WebChatAdapter {
     const key = sessionId || 'default'
     let state = this.sessionState.get(key)
     if (!state) {
-      state = { bootstrapped: false, sentMessages: 0, toolContext: '' }
+      state = { bootstrapped: false, contextDelivered: false, sentMessages: 0, sentUserKeys: [], toolContext: '', contextReference: null }
       this.sessionState.set(key, state)
     }
     return state
+  }
+
+  /**
+   * Force one DSH session onto a fresh web conversation. The next provider
+   * request therefore sends a full DSH context snapshot and cannot reuse an
+   * in-memory incremental cursor left behind by a failed/restarted exchange.
+   */
+  async syncSession(sessionId) {
+    const id = String(sessionId || '').trim()
+    if (!id) throw new BridgeError('session-required', '同步网页会话需要当前 DSH sessionId。')
+    const result = await this.session.newChat({ site: this.settings.site, sessionKey: id })
+    this.sessionState.delete(id)
+    return {
+      sessionId: id,
+      provider: this.providerId,
+      site: this.settings.site,
+      conversation: result?.conversation || null,
+    }
   }
 
   providerInfo(provider) {
@@ -319,26 +361,41 @@ export class WebChatAdapter {
     const selected = preparedSelection === undefined ? await this.selectionFor(options.model, options.signal) : preparedSelection
     const webModel = selected && (options.reasoningEffort ? selected.choices.find(level => `web-${level.power}` === options.reasoningEffort) : selected.choices.find(level => level.power === selected.legacyPower) || selected.choices.find(level => level.preferred) || selected.choices[0])
     if (selected && !webModel) throw new BridgeError('reasoning-unavailable', '请选择推理等级，当前网页不支持所选档位。')
-    // First turn carries only the tool block plus the user's own message: the
-    // DSH system prompt is huge and the web chat already has its own system
-    // instructions, so sending it just bloats the composer and invites abuse
-    // checks. Later turns send only the new messages.
+    // Native ChatGPT reads the effective DSH input through MCP. The composer
+    // carries only the bootstrap reference and new user input. Other routes
+    // retain their existing text-attachment transport.
     // DSH appends runtime-context and skill-catalog messages after the user's
     // input. They can become empty after stripReminders; exclude them before
     // choosing the final message or advancing the incremental history cursor.
     // Flattening also preserves tool results whose messageText() is empty.
     const nativeMcp = this.settings.site === 'chatgpt' && typeof this.parseReply !== 'function'
-    const userMessages = allMessages.filter((message) => message.role !== 'system' && message.role !== 'assistant' &&
+    const nativeContext = isMainChat && nativeMcp && Boolean(this.contextStore)
+    if (nativeContext && this.contextAvailable && !this.contextAvailable()) {
+      throw new BridgeError('context-tool-unavailable', 'Nexus DSH 尚未暴露 dsh_get_context。请在现有 MCP 工具范围中启用该工具并刷新连接，再重试。')
+    }
+    const snapshotMessages = nativeContext ? messages : null
+    const userMessages = nativeContext
+      ? snapshotMessages.filter(directUserMessage).map(message => this.toolScope?.originalMessage?.(baseSessionId, message) || message)
+      : allMessages.filter((message) => message.role !== 'system' && message.role !== 'assistant' &&
       !(nativeMcp && String(message.source?.callId || '').startsWith('wb_mcp_')) &&
       (flattenMessages([message]) || this.toolScope?.hasAttachments?.(baseSessionId, message)))
-    const delta = state.bootstrapped ? userMessages.slice(state.sentMessages) : userMessages.slice(-1)
+    const userKeys = nativeContext ? userMessages.map(message => `${message.id || ''}:${digest(message.content)}`) : []
+    let delta = state.bootstrapped ? userMessages.slice(state.sentMessages) : userMessages.slice(-1)
+    if (nativeContext && state.bootstrapped) {
+      let common = 0
+      while (common < userKeys.length && common < state.sentUserKeys.length && userKeys[common] === state.sentUserKeys[common]) common++
+      delta = common === state.sentUserKeys.length ? userMessages.slice(common)
+        : userKeys.length && userKeys.at(-1) !== state.sentUserKeys.at(-1) ? userMessages.slice(-1) : []
+    }
     // Auxiliary tasks need their system instructions and complete input on
     // every request; they do not receive the main chat's context attachment.
-    let prompt = flattenMessages(isMainChat ? (delta.length > 0 ? delta : userMessages.slice(-1)) : allMessages)
-    const attachments = isMainChat ? await this.toolScope?.attachmentsFor?.(baseSessionId, delta.length > 0 ? delta : userMessages.slice(-1)) || [] : []
+    let prompt = nativeContext ? delta.map(message => rawMessageText(message)).filter(Boolean).map(text => `用户：${text}`).join('\n\n')
+      : flattenMessages(isMainChat ? (delta.length > 0 ? delta : userMessages.slice(-1)) : allMessages)
+    const attachmentMessages = nativeContext ? delta : delta.length > 0 ? delta : userMessages.slice(-1)
+    const attachments = isMainChat ? await this.toolScope?.attachmentsFor?.(baseSessionId, attachmentMessages) || [] : []
     for (const file of attachments) if (file.mention) prompt = prompt.split(file.mention).join(`[附件：${file.name}]`)
     if (!prompt.trim() && attachments.length) prompt = '用户上传了附件，请结合附件回复。'
-    if (!prompt.trim()) {
+    if (!prompt.trim() && !nativeContext) {
       throw new BridgeError('empty-message', `[${this.providerId}] No message text remains after removing DSH context reminders.`)
     }
     const maxChars = Number(this.settings.providers?.maxPromptChars) || 12000
@@ -353,15 +410,24 @@ export class WebChatAdapter {
     const toolContext = withTools ? renderTools(tools) : ''
     const updateTools = withTools && toolContext !== state.toolContext
 
-    // Keep the composer short: on the first turn the bulky material (DSH system
-    // prompt, tool list, earlier history) is attached as a text file, so the
-    // input box only carries the user's own sentence.
+    // Preserve the final effective request exactly, including changes made by
+    // later LLM middleware to existing messages. Attachment originals are used
+    // only for the composer and browser upload, never to overwrite this input.
+    const contextReference = nativeContext ? this.contextStore.capture({
+      sessionId: baseSessionId,
+      messages: snapshotMessages,
+      toolHistory: options.toolHistory ?? this.toolScope?.originalRequest?.(baseSessionId)?.toolHistory,
+      workspace: await this.toolScope?.workspaceFor?.(baseSessionId, options.signal) || {},
+    }) : null
+
+    // Compatibility routes keep their existing text-file transport for bulky
+    // instructions and history. Native ChatGPT uses the snapshot above.
     let attachment = null
-    if (isMainChat) {
+    if (isMainChat && !nativeContext) {
       const background = [
-        !state.bootstrapped ? flattenMessages(allMessages.filter((message) => message.role === 'system')) : '',
+        !state.contextDelivered ? flattenMessages(allMessages.filter((message) => message.role === 'system')) : '',
         updateTools ? toolContext : '',
-        !state.bootstrapped ? flattenMessages(userMessages.slice(0, -1)) : '',
+        !state.contextDelivered ? flattenMessages(userMessages.slice(0, -1)) : '',
       ]
         .filter(Boolean)
         .join('\n\n')
@@ -375,7 +441,7 @@ export class WebChatAdapter {
     // The attachment must be uploaded *inside* the session flow, after the new
     // chat exists: ChatGPT creates the conversation only when the message is
     // sent, so attaching beforehand landed it in the previous conversation.
-    const message = prompt
+    const message = contextReference ? contextGuidance(contextReference, prompt) : prompt
 
     let reply = ''
     let streamedText = ''
@@ -385,26 +451,55 @@ export class WebChatAdapter {
     const interrupt = new AbortController()
     const signal = nativeMcp && options.signal ? AbortSignal.any([options.signal, interrupt.signal]) : nativeMcp ? interrupt.signal : options.signal
     let unwatch
-    const markSubmitted = () => {
+    let submittedState = {}
+    const markSubmitted = (submitted = {}) => {
+      submittedState = { ...submittedState, ...submitted }
       state.bootstrapped = true
       state.sentMessages = userMessages.length
-      if (withTools) state.toolContext = toolContext
+      if (nativeContext) state.sentUserKeys = userKeys
+      else state.contextDelivered = !attachment || submittedState.contextAttachmentDelivered !== false
+      if (withTools && state.contextDelivered) state.toolContext = toolContext
     }
     try {
       if (nativeMcp && isMainChat) unwatch = this.toolScope?.watchUserInput?.(baseSessionId, () => { inputInterrupted = true; interrupt.abort() })
       let nextText = null
       let wake
-      const publish = ({ text }) => { nextText = streamPreview(text); const notify = wake; wake = null; notify?.() }
+      const publish = ({ text }) => {
+        // Do not persist an uninitialized answer as a partial assistant message
+        // if the web model ignores bootstrap. Progress snapshots are cumulative;
+        // the next update (or final reply) still contains this earlier text.
+        if (contextReference && !this.contextStore.isDelivered(contextReference.context_id)) return
+        nextText = streamPreview(text)
+        const notify = wake
+        wake = null
+        notify?.()
+      }
       const ask = () => this.session.ask(message, {
         signal,
         sessionKey: sessionId,
         attachment,
         onSubmitted: markSubmitted,
+        ...(contextReference ? {
+          onConversation: info => {
+            if (info.newConversation || info.reset) { state.contextReference = null; state.contextDelivered = false }
+          },
+          prepareMessage: async info => ({
+            text: contextGuidance(contextReference, prompt,
+              !info.newConversation && !info.reset && state.contextReference && this.contextStore.has(state.contextReference.context_id)
+                ? state.contextReference.context_id : null),
+            attachment: null,
+            // A fresh web conversation has none of the earlier user uploads,
+            // even when this attempt contains only a context continuation.
+            attachments: info.newConversation || info.reset
+              ? await this.toolScope?.attachmentsFor?.(baseSessionId, userMessages) || []
+              : attachments,
+          }),
+        } : {}),
         ...(nativeMcp ? { onProgress: publish } : {}),
         ...(attachments.length ? { attachments } : {}),
         ...(this.settings.site === 'chatgpt' ? webModel ? { webModel } : { reasoning: options.model === `${this.modelId}-instant` ? 'off' : 'on' } : {}),
       })
-      const operation = this.toolScope && isMainChat ? this.toolScope.withSession(baseSessionId, ask, signal) : ask()
+      const operation = this.toolScope && isMainChat ? this.toolScope.withSession(baseSessionId, ask, signal, { contextReference }) : ask()
       let result
       if (nativeMcp) {
         let done = false
@@ -427,7 +522,14 @@ export class WebChatAdapter {
         if (failure) throw failure
       } else result = await operation
       reply = result.reply
-      markSubmitted()
+      markSubmitted(result)
+      if (contextReference) {
+        state.contextDelivered = this.contextStore.isDelivered(contextReference.context_id)
+        if (!state.contextDelivered) {
+          throw new BridgeError('context-not-initialized', '网页模型未完整读取本轮 DSH 上下文；初始化未完成。请确认 Nexus DSH 已刷新并包含 dsh_get_context 后重试。')
+        }
+        state.contextReference = contextReference
+      }
     } catch (err) {
       if (inputInterrupted || err.code === 'web-generation-stopped' || err.code === 'aborted' || options.signal?.aborted) {
         if (err.code === 'web-generation-stopped') this.toolScope?.cancelSession?.(baseSessionId)

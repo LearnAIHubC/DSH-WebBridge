@@ -52,7 +52,7 @@ function boot(definitions) {
   document.addEventListener('keydown', event => { if (event.key === 'Escape') { opened = false; render() } })
   render()
 }
-const fixture = () => `<style>[data-reasoning-slider]{min-height:20px}</style><button data-testid="accounts-profile-button">Account</button><form><button type="button" data-composer-navigation-target="reasoning" aria-haspopup="menu"></button></form><div id="picker"></div><script>(${boot.toString()})(${JSON.stringify(definitions)})</script>`
+const fixture = () => `<style>[data-reasoning-slider]{min-height:20px}</style><button data-testid="accounts-profile-button">Account</button><button type="button" data-composer-navigation-target="reasoning" aria-haspopup="menu" data-selected-reasoning-effort="max">Header model</button><form><button type="button" data-composer-navigation-target="reasoning" aria-haspopup="menu"></button></form><div id="picker"></div><script>(${boot.toString()})(${JSON.stringify(definitions)})</script>`
 try {
   const context = await driver.ensureContext()
   await context.route('https://chatgpt.com/**', route => route.fulfill({ contentType: 'text/html', body: fixture() }))
@@ -63,6 +63,7 @@ try {
   assert.deepEqual(catalog.map(entry => entry.label), ['Instant', 'Deep', 'Maximum', 'Auto', 'Full'])
   await driver.exclusive(async () => {
     const page = await driver.currentPage()
+    assert.equal(await page.locator('button[data-composer-navigation-target="reasoning"]').count(), 2)
     assert.equal(await page.locator('form button').getAttribute('aria-expanded'), 'false')
     assert.ok((await page.locator('form button').innerText()).includes('Full'))
     assert.ok((await page.evaluate(() => trustedKeys)).every(Boolean))

@@ -2,11 +2,12 @@ import { createHash } from 'node:crypto'
 import { readFile } from 'node:fs/promises'
 import { TunnelSupervisor } from './tunnel.js'
 import { SetupBrowser } from './setup-browser.js'
-import { parseDebugQuery, parseSetupCommand, setupRemote, SETUP_SERVICE } from './setup-contract.js'
+import { parseDebugQuery, parseSetupCommand, parseSyncRequest, setupRemote, SETUP_SERVICE } from './setup-contract.js'
 
 export class WebBridgeSetup {
-  constructor({ settings, driver, bridge, log = () => {}, onReinstall = () => {}, tunnel, browser, models }) {
+  constructor({ settings, driver, bridge, log = () => {}, onReinstall = () => {}, syncSession, tunnel, browser, models }) {
     this.settings = settings; this.driver = driver; this.bridge = bridge; this.log = log; this.onReinstall = onReinstall
+    this.syncSession = syncSession || (async () => { throw new Error('会话同步服务尚未就绪。') })
     this.tunnel = tunnel || new TunnelSupervisor({ settings, bridge, log })
     this.models = models
     this.browser = browser || new SetupBrowser({ settings, driver, stage: text => { this.job.stage = text } })
@@ -51,6 +52,9 @@ export class WebBridgeSetup {
       result.screenshot.dataUrl = `data:image/png;base64,${bytes.toString('base64')}`
     }
     return result
+  }
+  async sync(input) {
+    return this.syncSession(parseSyncRequest(input))
   }
   execute(input) {
     const command = parseSetupCommand(input)
@@ -119,7 +123,7 @@ export class WebBridgeSetup {
     })
   }
   catalogFingerprint() {
-    return createHash('sha256').update(JSON.stringify(this.bridge.catalog())).digest('hex')
+    return createHash('sha256').update(JSON.stringify({ tools: this.bridge.catalog(), instructions: this.bridge.instructions || '' })).digest('hex')
   }
   async autoRefresh() {
     if (!this.job.busy && !this.driver.busy) await this.browser.observeAccount()
@@ -136,7 +140,7 @@ export class WebBridgeSetup {
 /** Public Cordis provider and Typert descriptors; no installed SDK path needed. */
 export function mountSetupService(ctx, controller) {
   const service = {
-    read: () => controller.read(), execute: command => controller.execute(command), debug: query => controller.debug(query),
+    read: () => controller.read(), execute: command => controller.execute(command), debug: query => controller.debug(query), sync: request => controller.sync(request),
   }
   service.typertRemote = Object.freeze({ service, serviceKey: SETUP_SERVICE, namespace: SETUP_SERVICE })
   ctx.reflect.provide(SETUP_SERVICE, service)

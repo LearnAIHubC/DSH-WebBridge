@@ -5,7 +5,13 @@ import { BridgeError } from './envelope.js'
 import { SetupControls } from './setup-controls.js'
 
 const CATALOG_SESSION = '__webbridge_model_catalog__'
-const TRIGGER = 'button[data-composer-navigation-target="reasoning"], form button[aria-haspopup="menu"]'
+const TRIGGER_WAIT = 'button[data-composer-navigation-target="reasoning"], form button[aria-haspopup="menu"]'
+const TRIGGER_SELECTORS = [
+  'form button[data-composer-navigation-target="reasoning"]',
+  'form button[aria-haspopup="menu"][data-selected-reasoning-effort]',
+  'button[data-composer-navigation-target="reasoning"]',
+  'form button[aria-haspopup="menu"]',
+]
 const ROOT = '[data-model-picker-view]'
 
 export function paidModelKey(modelName, power) {
@@ -84,8 +90,23 @@ export class ChatgptModels {
     }).finally(() => { this.pending = null })
     return this.pending
   }
+  async trigger(purpose = '等待 ChatGPT 模型入口') {
+    const page = await this.driver.currentPage()
+    const waiting = page.locator(TRIGGER_WAIT).filter({ visible: true })
+    try { await waiting.first().waitFor({ state: 'visible', timeout: 10000 }) }
+    catch {
+      const count = await waiting.count()
+      throw new BridgeError('setup-ui-changed', `${purpose}：预期 1 个控件，实际 ${count} 个（${new URL(page.url()).pathname}）。页面结构可能已变化，尚未执行此步骤。`)
+    }
+    for (const selector of TRIGGER_SELECTORS) {
+      const trigger = page.locator(selector).filter({ visible: true })
+      if (await trigger.count() === 1) return trigger
+    }
+    const count = await waiting.count()
+    throw new BridgeError('setup-ui-changed', `${purpose}：预期 1 个控件，实际 ${count} 个（${new URL(page.url()).pathname}）。页面结构可能已变化，尚未执行此步骤。`)
+  }
   async open() {
-    const trigger = await this.controls.one(TRIGGER, '等待 ChatGPT 模型入口')
+    const trigger = await this.trigger()
     if (await trigger.getAttribute('aria-expanded') !== 'true') await trigger.click()
     await this.controls.one(ROOT, '等待网页模型菜单')
   }
@@ -99,7 +120,7 @@ export class ChatgptModels {
         power: Number(slider?.getAttribute('aria-valuenow')), min: Number(slider?.getAttribute('aria-valuemin')), max: Number(slider?.getAttribute('aria-valuemax')) }
     })
     if (!value.modelName || !value.label || !value.hasRange || ![value.power, value.min, value.max].every(Number.isInteger) || value.min < 0 || value.max > 20 || value.max < value.min) throw new BridgeError('model-picker-changed', '网页模型或思考滑块结构不符，尚未发送消息。')
-    const trigger = page.locator(TRIGGER)
+    const trigger = await this.trigger('读取 ChatGPT 模型入口')
     return { ...value, effort: await trigger.getAttribute('data-selected-reasoning-effort') || '' }
   }
   async names() {
