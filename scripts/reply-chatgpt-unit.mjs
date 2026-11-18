@@ -2,6 +2,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { waitForReply } from '../src/detect.js'
+import { BrowserDriver } from '../src/driver.js'
 
 const old = { count: 1, text: 'OLD_ANSWER', userTurnKey: 'old-turn', userText: 'OLD_QUESTION', replyTurnKey: 'old-turn', replyId: 'old-reply' }
 const fresh = { count: 2, text: 'NEW_ANSWER', userTurnKey: 'new-turn', userText: '用户：NEW_QUESTION Nexus DSH', replyTurnKey: 'new-turn', replyId: 'new-reply' }
@@ -79,6 +80,38 @@ test('an unlimited wait preserves a manual-login error instead of retrying it fo
   const failure = Object.assign(new Error('Sign in manually'), { code: 'manual-auth-required' })
   await assert.rejects(wait([], { driver: { eval: async () => { throw failure } }, settings: { replyTimeoutMs: 0, pollIntervalMs: 1, stableSamples: 1 } }), error => error === failure)
 })
+
+test('an unlimited wait surfaces a closed browser instead of retrying forever', async () => {
+  const failure = Object.assign(new Error('plugin was reloaded'), { code: 'browser-closed' })
+  await assert.rejects(wait([], {
+    driver: { eval: async () => { throw failure } },
+    settings: { replyTimeoutMs: 0, pollIntervalMs: 60000, stableSamples: 1 },
+  }), error => error === failure)
+})
+
+for (const change of ['close', 'replace', 'dispose']) {
+  test(`the reply wait ends when its original page undergoes ${change}`, async () => {
+    const driver = new BrowserDriver({ stateDir: '' })
+    let closed = false
+    let reads = 0
+    const page = { isClosed: () => closed }
+    driver.currentKey = () => 'request-A'
+    driver.context = { browser: () => ({ isConnected: () => true }) }
+    driver.sessionPages.set('request-A', 'page-A')
+    driver.pages.set('page-A', page)
+    driver.eval = async () => {
+      reads++
+      if (change === 'close') closed = true
+      if (change === 'replace') driver.pages.set('page-A', { isClosed: () => false })
+      if (change === 'dispose') driver.disposed = true
+      return { result: old }
+    }
+    await assert.rejects(wait([], {
+      driver, settings: { replyTimeoutMs: 0, pollIntervalMs: 1, stableSamples: 1 },
+    }), error => error.code === 'browser-closed')
+    assert.equal(reads, 1, 'the old request must never attach itself to a replacement page')
+  })
+}
 
 test('the captured submitted turn accepts the real reply even when an app mention changes visible prompt text', async () => {
   const answer = await wait([fresh, fresh], { expectedText: 'A prompt whose last character was moved around an app mention', expectedTurnKey: 'new-turn' })

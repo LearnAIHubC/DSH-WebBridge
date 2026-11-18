@@ -82,6 +82,13 @@ try {
     await driver.click('button')
     assert.equal((await driver.eval('window.__webbridgeGenerationWatch.stopped')).result, true)
     await driver.endGenerationWatch('navigation-stop')
+    const closingPage = await driver.currentPage()
+    const closedWait = assert.rejects(waitForReply({
+      driver, adapter: { messageSelector: '.missing-reply', matchReplyToUserTurn: true }, baseline: {},
+      settings: { replyTimeoutMs: 0, pollIntervalMs: 5, stableSamples: 1 }, expectedText: 'pending question',
+    }), error => error.code === 'browser-closed')
+    await closingPage.close()
+    await closedWait
     await driver.open(urls[0])
     driver.lastMode = { headed: true }
     driver.switchToHeadless = async () => { throw new Error('An unauthenticated/loading page must not trigger a browser restart') }

@@ -86,17 +86,19 @@ export async function waitForReply({ driver, adapter, baseline, settings, signal
   const expected = normalize(expectedText)
   const pluginName = normalize(adapter.pluginName)
   const withoutPlugin = text => text.split(pluginName).join('').replace(/\s+/g, '')
+  const assertReplyPage = driver.replyPageGuard?.()
 
   while (Date.now() < deadline) {
     if (signal?.aborted) throw new BridgeError('aborted', 'Reply wait was aborted')
 
     let state
     try {
+      assertReplyPage?.()
       state = await readReplyState(driver, adapter, signal)
       lastError = null
     } catch (err) {
       lastError = err
-      if (['aborted', 'manual-auth-required', 'driver-missing', 'account-restricted'].includes(err?.code) || String(err?.code || '').startsWith('auth-required')) throw err
+      if (['aborted', 'browser-closed', 'manual-auth-required', 'driver-missing', 'account-restricted'].includes(err?.code) || String(err?.code || '').startsWith('auth-required')) throw err
       await sleep(pollMs, signal)
       continue
     }

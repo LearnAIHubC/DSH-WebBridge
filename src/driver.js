@@ -207,6 +207,18 @@ export class BrowserDriver {
   }
   async currentPage() { return this.getPageFor(this.currentKey()) }
 
+  replyPageGuard() {
+    const pageId = this.sessionPages.get(this.currentKey())
+    const page = this.pages.get(pageId)
+    const context = this.context
+    return () => {
+      if (this.disposed || !context || this.context !== context || !page || page.isClosed()
+        || this.pages.get(pageId) !== page || !context.browser()?.isConnected()) {
+        throw new BridgeError('browser-closed', '网页会话已关闭，或插件已重新加载。本轮等待已结束，请从当前 DSH 会话重试。')
+      }
+    }
+  }
+
   exclusive(operation, sessionKey = DEFAULT_SESSION) {
     const key = String(sessionKey || DEFAULT_SESSION)
     const previous = this.queues.get(key) || Promise.resolve()
