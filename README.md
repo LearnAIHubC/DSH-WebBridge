@@ -211,6 +211,10 @@ WebBridge 使用自己的 Playwright 持久化 Chrome Profile，不读取或修�
 
 更多本机数据、密钥和隧道运行时说明见 [ChatGPT 网页版设置](docs/CHATGPT-SETUP.md)。
 
+## 友情链接
+
+- [LINUX DO](https://linux.do/) —— 新的理想型社区，技术爱好者的聚集地。
+
 ## 许可证
 
 项目使用 [AGPL-3.0-only](LICENSE)。
