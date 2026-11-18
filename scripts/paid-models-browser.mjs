@@ -3,7 +3,7 @@ import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { BrowserDriver } from '../src/driver.js'
-import { ChatgptModels } from '../src/chatgpt-models.js'
+import { ChatgptModels } from '../src/models/chatgpt.js'
 
 const root = await mkdtemp(join(tmpdir(), 'wb-paid-picker-'))
 const driver = new BrowserDriver({ stateDir: root, browserProfileDir: join(root, 'profile') })

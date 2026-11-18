@@ -5,6 +5,21 @@ import { SITE_PRESETS } from './config.js'
 import { uploadProblem } from './attachments.js'
 import { randomUUID } from 'node:crypto'
 import { buildConversationReadExpression } from './conversation-sync.js'
+import { setTimeout as delay } from 'node:timers/promises'
+
+function transientBrowserError(error) {
+  return error?.name === 'TimeoutError' || ['read-failed', 'conversation-not-ready', 'composer-not-ready', 'send-not-ready', 'message-not-sent'].includes(error?.code) ||
+    /Execution context was destroyed|Cannot find context|Target .*closed|has been closed|frame was detached|element.*detached|net::ERR_|navigation.*interrupted/i.test(error?.message || '')
+}
+
+function checkAborted(signal) {
+  if (signal?.aborted) throw new BridgeError('aborted', '网页消息发送已取消。')
+}
+
+async function pause(ms, signal) {
+  try { await delay(ms, undefined, { signal }) }
+  catch (error) { checkAborted(signal); throw error }
+}
 
 /**
  * One browser chat at a time, on purpose.
@@ -53,23 +68,35 @@ export class ChatSession {
   /** Open the site if the active page is elsewhere, then report auth hints. */
   async ensurePage(site, options = {}) {
     const preset = this.sitePreset(site)
-    const state = await this.driver.state()
-    const host = safeHost(preset.url)
-    const current = String(state.url || '')
-    if (!current || !current.includes(host)) {
-      this.log(`[webbridge] navigating to ${preset.url}`)
-      await this.driver.open(preset.url, { headed: options.headed, signal: options.signal })
+    const url = options.url || preset.url
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      checkAborted(options.signal)
+      try {
+        const state = await this.driver.state()
+        if (attempt > 1 || (options.url ? !sameConversationURL(state.url, url) : safeHost(state.url) !== safeHost(url))) {
+          await this.driver.open(url, { headed: options.headed, signal: options.signal })
+        }
+        const ready = await this.authGate(await this.driver.state(), this.adapter(site).inputSelector, options)
+        if (options.url && !sameConversationURL(ready.url, url)) throw new BridgeError('conversation-not-ready', '原网页会话尚未恢复，未发送消息。')
+        return ready
+      } catch (error) {
+        checkAborted(options.signal)
+        if (!transientBrowserError(error)) throw error
+        if (attempt === 3) throw new BridgeError('page-not-ready', '已重新连接 3 次，网页仍未就绪。请检查浏览器和网络后重试。', { attempts: attempt, phase: 'connect', cause: error.code || error.name })
+        this.log(`[webbridge] 网页连接暂时不可用，正在重新连接（${attempt + 1}/3）`)
+        await pause(Math.min(500, this.settings.commandTimeoutMs || 500), options.signal)
+      }
     }
-    return this.authGate(await this.driver.state(), this.adapter(site).inputSelector)
   }
 
   /** Refuse to act on a login/verification page 鈥?this is a hard rule. */
-  async authGate(state, inputSelector) {
+  async authGate(state, inputSelector, options = {}) {
+    checkAborted(options.signal)
     // Sites also show short-lived interstitials ("Just a moment…", bot checks)
     // that clear by themselves; re-check once before calling it a hard failure.
     let current = state
     for (let attempt = 0; attempt < 2 && current?.manualAuth?.required; attempt++) {
-      await new Promise((resolve) => setTimeout(resolve, 2500))
+      await pause(Math.min(2500, this.settings.commandTimeoutMs || 2500), options.signal)
       try {
         current = await this.driver.state()
       } catch {
@@ -77,6 +104,7 @@ export class ChatSession {
       }
     }
 
+    checkAborted(options.signal)
     const manual = current?.manualAuth
     if (manual?.required) {
       const kind = manual.kind || 'login'
@@ -143,64 +171,172 @@ export class ChatSession {
     return { quota }
   }
 
-  /** Fill and submit once, then confirm ChatGPT has consumed the draft. */
-  async submit(text, site, adapter, options = {}) {
-    if (!String(text ?? '').trim()) throw new BridgeError('empty-message', 'Cannot submit an empty web-chat message.')
-    if (site === 'chatgpt' && options.webModel) {
-      if (!this.modelControl) throw new BridgeError('model-control-unavailable', '网页模型控制尚未就绪，尚未发送消息。')
-      await this.modelControl.select(options.webModel)
+  /** Check the actual user turn as well as the draft before deciding to resend. */
+  async readSubmission(text, adapter, baseline, signal) {
+    checkAborted(signal)
+    const sent = await readReplyState(this.driver, adapter, signal)
+    if (sent.webStopped) throw new BridgeError('web-generation-stopped', '网页生成已中止。')
+    const normalize = value => {
+      const content = String(value || '')
+      return (adapter.pluginName ? content.split(adapter.pluginName).join('') : content).replace(/\s+/g, '')
     }
-    let prepared
-    try {
-    await this.driver.fillLong(adapter.inputSelector, text, { signal: options.signal })
-    // Filling a contenteditable replaces app mentions, so choose the connector
-    // after filling the user's text, immediately before sending.
-    const menu = options.selectPlugin || options.attachment || options.attachments?.length ? await this.ensurePlugin(adapter, options) : null
-    prepared = await this.prepareAttachments(site, options, menu?.quota)
-    if (prepared.reset) {
-      await this.startNewChat(site, options)
-      const reset = await options.onConversationReset?.({ reason: 'attachment-quota' })
-      if (typeof reset?.text === 'string') text = reset.text
-      if (!String(text ?? '').trim()) throw new BridgeError('empty-message', 'Cannot submit an empty web-chat message.')
-      // Resetting the page invalidates its old reply baseline as well as its
-      // context. Never let the abandoned conversation satisfy this request.
-      if (options.baseline) Object.assign(options.baseline, await readReplyState(this.driver, adapter, options.signal))
-      await this.driver.fillLong(adapter.inputSelector, text, { signal: options.signal })
-      await this.ensurePlugin(adapter, {})
-    }
-    if (!options.webModel) await this.ensureReasoning(adapter, options.signal, options.reasoning || 'on')
-    if (options.watchId && this.driver.startGenerationWatch) await this.driver.startGenerationWatch(options.watchId, { signal: options.signal })
-    // Older saved ChatGPT calibrations used an empty sendSelector. Fall back to
-    // the current built-in ChatGPT selector rather than submitting with Enter.
-    const sendSelector = adapter.sendSelector || this.sitePreset(site).adapter.sendSelector
-    await this.driver.click(sendSelector, { signal: options.signal })
-    const delivery = {
-      submittedText: text,
-      contextAttachmentDelivered: prepared.contextAttachmentDelivered === true,
-      contextAttachmentSkipped: prepared.contextAttachmentSkipped === true,
-      conversationReset: prepared.reset === true,
-    }
-    const expression = `(() => {
+    const newTurn = sent.userTurnKey && !sent.userTurnKey.startsWith('fallback-') && sent.userTurnKey !== baseline.userTurnKey
+    if (newTurn && normalize(sent.userText) === normalize(text)) return { sent }
+    const composer = (await this.driver.eval(`(() => {
       const editors = Array.from(document.querySelectorAll(${JSON.stringify(adapter.inputSelector)}))
         .filter((node) => node.checkVisibility({ checkOpacity: true, checkVisibilityCSS: true }));
-      return { composerText: editors.map((node) => {
+      return { composerCount: editors.length, composerText: editors.map((node) => {
         if (node.value !== undefined) return node.value;
         const copy = node.cloneNode(true);
         copy.querySelectorAll('[app-mention-display-name]').forEach((mention) => mention.remove());
         return copy.textContent || '';
       }).join('\\n') };
-    })()`
+    })()`, { signal }))?.result
+    // Sites without ChatGPT's turn markers can never satisfy the userTurnKey
+    // check above, so a real send would land as "uncertain" forever. For them a
+    // send counts as delivered when the draft left the composer and the page
+    // reacted: an assistant node appeared, streaming started, or the last
+    // reply changed from the pre-send baseline.
+    if (adapter.matchReplyToUserTurn === false) {
+      const draftLeft = !(composer?.composerCount > 0) || normalize(composer.composerText) !== normalize(text)
+      const reacted = sent.count > baseline.count || Boolean(sent.streaming) ||
+        (Boolean(sent.text) && sent.text !== baseline.text)
+      if (draftLeft && reacted) return { sent }
+    }
+    return { unsent: Boolean(composer?.composerCount > 0 && normalize(composer.composerText) === normalize(text) &&
+      !sent.streaming && sent.userTurnKey === (baseline.userTurnKey || '')) }
+  }
+
+  async confirmSubmission(text, adapter, baseline, options) {
     const deadline = Date.now() + Math.min(5000, this.settings.commandTimeoutMs || 5000)
+    let state
     do {
-      if (options.signal?.aborted) throw new BridgeError('aborted', 'Message submission was aborted')
-      const state = (await this.driver.eval(expression, { signal: options.signal }))?.result
-      if (typeof state?.composerText === 'string' && !state.composerText.trim()) {
-        const sent = await readReplyState(this.driver, adapter, options.signal).catch(() => null)
-        return { ...delivery, userTurnKey: sent?.userTurnKey && !sent.userTurnKey.startsWith('fallback-') && sent.userTurnKey !== options.baseline?.userTurnKey ? sent.userTurnKey : '', url: sent?.url || '', uploadLease: prepared.lease }
+      checkAborted(options.signal)
+      try {
+        state = await this.readSubmission(text, adapter, baseline, options.signal)
+        if (state.sent) return state
+      } catch (error) {
+        if (!transientBrowserError(error)) throw error
+        state = null
       }
-      await new Promise((resolve) => setTimeout(resolve, 100))
+      await pause(Math.min(100, Math.max(1, deadline - Date.now())), options.signal)
     } while (Date.now() < deadline)
-    throw new BridgeError('message-not-sent', 'The message stayed in the ChatGPT composer after sending. No reply wait was started.')
+    return state || {}
+  }
+
+  /** Recover the same conversation and retry only messages confirmed unsent. */
+  async submit(text, site, adapter, options = {}) {
+    if (!String(text ?? '').trim()) throw new BridgeError('empty-message', 'Cannot submit an empty web-chat message.')
+    const baseline = options.baseline || await readReplyState(this.driver, adapter, options.signal)
+    const timeoutMs = Math.min(10000, this.settings.commandTimeoutMs || 10000)
+    const command = { signal: options.signal, timeoutMs }
+    let recoveryUrl = baseline.url
+    let reload = false
+    let sendAttempted = false
+    let prepared
+    let contextAttachmentSkipped = false
+    let conversationReset = false
+    const delivery = sent => ({
+      submittedText: text,
+      contextAttachmentDelivered: prepared?.contextAttachmentDelivered === true,
+      contextAttachmentSkipped,
+      conversationReset,
+      userTurnKey: sent.userTurnKey,
+      url: sent.url,
+      uploadLease: prepared?.lease,
+    })
+    const resetConversation = async reason => {
+      await this.startNewChat(site, options)
+      conversationReset = true
+      const reset = await options.onConversationReset?.({ reason })
+      if (typeof reset?.text === 'string') text = reset.text
+      if (!String(text ?? '').trim()) throw new BridgeError('empty-message', 'Cannot submit an empty web-chat message.')
+      Object.assign(baseline, await readReplyState(this.driver, adapter, options.signal))
+      recoveryUrl = baseline.url
+    }
+    try {
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      let phase = 'page'
+      checkAborted(options.signal)
+      try {
+        if (sendAttempted) {
+          const state = await this.confirmSubmission(text, adapter, baseline, options)
+          if (state.sent) return delivery(state.sent)
+          if (!state.unsent) throw new BridgeError('message-send-uncertain', '已重新检查网页，但仍无法确认消息是否发出。为避免重复发送，本轮未重发，请检查原网页会话。')
+        }
+        if (reload) {
+          await this.driver.open(recoveryUrl || this.sitePreset(site).url, command)
+          const restored = await this.authGate(await this.driver.state(), adapter.inputSelector, options)
+          if (persistedConversationURL(site, recoveryUrl, this.sitePreset(site).url) && !sameConversationURL(restored.url, recoveryUrl)) {
+            throw new BridgeError('conversation-not-ready', '原网页会话尚未恢复，未重新发送消息。')
+          }
+          // A delayed send may finish while the original conversation reloads.
+          if (sendAttempted && persistedConversationURL(site, recoveryUrl, this.sitePreset(site).url)) {
+            const state = await this.readSubmission(text, adapter, baseline, options.signal)
+            if (state.sent) return delivery(state.sent)
+          }
+          await prepared?.lease?.release?.()
+          prepared = null
+          if (!persistedConversationURL(site, recoveryUrl, this.sitePreset(site).url)) await resetConversation('send-recovery')
+          sendAttempted = false
+          reload = false
+        }
+        const page = await this.authGate(await this.driver.state(), adapter.inputSelector, options)
+        recoveryUrl ||= page.url
+        if (options.webModel) {
+          // Strategy dispatch: whatever model source the route carries applies
+          // the choice; no site name is consulted here.
+          if (!this.modelControl) throw new BridgeError('model-control-unavailable', '网页模型控制尚未就绪，尚未发送消息。')
+          await this.modelControl.select(options.webModel)
+        }
+        phase = 'fill'
+        if (attempt > 1) await this.driver.fillLong(adapter.inputSelector, '', command)
+        await this.driver.fillLong(adapter.inputSelector, text, command)
+        phase = 'prepare'
+        // Refilling replaces app mentions. Keep existing uploads until a reload.
+        const uploadOptions = contextAttachmentSkipped ? { ...options, attachment: null } : options
+        const menu = options.selectPlugin || uploadOptions.attachment || uploadOptions.attachments?.length || attempt > 1
+          ? await this.ensurePlugin(adapter, uploadOptions) : null
+        if (!prepared) {
+          prepared = await this.prepareAttachments(site, uploadOptions, menu?.quota)
+          contextAttachmentSkipped ||= prepared.contextAttachmentSkipped === true
+          if (prepared.reset) {
+            await resetConversation('attachment-quota')
+            await this.driver.fillLong(adapter.inputSelector, text, command)
+            await this.ensurePlugin(adapter, {})
+          }
+        }
+        if (!options.webModel) await this.ensureReasoning(adapter, options.signal, options.reasoning || 'on')
+        if (options.watchId && this.driver.startGenerationWatch) await this.driver.startGenerationWatch(options.watchId, command)
+        checkAborted(options.signal)
+        phase = 'send'
+        const sendSelector = adapter.sendSelector || this.sitePreset(site).adapter.sendSelector
+        let clickError
+        sendAttempted = true
+        try { await this.driver.click(sendSelector, command) }
+        catch (error) { clickError = error }
+        let state = await this.confirmSubmission(text, adapter, baseline, options)
+        if (state.sent) return delivery(state.sent)
+        await this.authGate(await this.driver.state(), adapter.inputSelector, options)
+        if (!state.unsent) {
+          this.log('[webbridge] 发送结果暂时不明确，正在重新检查本轮用户消息')
+          state = await this.confirmSubmission(text, adapter, baseline, options)
+          if (state.sent) return delivery(state.sent)
+          if (!state.unsent) throw new BridgeError('message-send-uncertain', '已重新检查网页，但仍无法确认消息是否发出。为避免重复发送，本轮未重发，请检查原网页会话。')
+        }
+        throw clickError || new BridgeError('message-not-sent', '消息仍在输入框中，尚未发送。')
+      } catch (error) {
+        checkAborted(options.signal)
+        if (!transientBrowserError(error)) throw error
+        if (attempt === 3) {
+          const code = error.code || (phase === 'fill' ? 'composer-not-ready' : phase === 'send' ? 'send-not-ready' : 'page-not-ready')
+          throw new BridgeError(code, `已尝试恢复并发送 3 次，${phase === 'fill' ? '输入框仍不可用' : phase === 'send' ? '消息仍未发出' : '网页仍未就绪'}。请检查原网页会话后重试。`, { attempts: attempt, phase, cause: error.code || error.name })
+        }
+        reload = reload || phase !== 'send' || attempt === 2
+        this.log(`[webbridge] ${phase} 阶段暂时失败，${reload ? '正在重新打开原会话' : '正在清空输入框并重新发送'}（${attempt + 1}/3）`)
+        await pause(Math.min(250, timeoutMs), options.signal)
+      }
+    }
     } catch (error) { await prepared?.lease?.release?.(); throw error }
   }
 
@@ -240,7 +376,7 @@ export class ChatSession {
       await this.ensurePage(site, options)
 
       const baseline = await readReplyState(this.driver, adapter, options.signal)
-      await this.submit(text, site, adapter, options)
+      await this.submit(text, site, adapter, { ...options, baseline })
 
       this.last = { site, count: baseline.count, text: baseline.text, at: Date.now() }
       return { site, baseline, sentAt: Date.now() }
@@ -261,6 +397,7 @@ export class ChatSession {
     return this.enqueue(async () => {
       let uploaded
       let watchId
+      let preservePage = false
       try {
       const site = options.site || this.settings.site
       const adapter = this.adapter(site)
@@ -279,7 +416,9 @@ export class ChatSession {
       let generation = known?.generation || (key ? randomUUID() : this.legacyConversationGeneration)
       if (key && known) this.conversations.set(key, known)
       if (known?.url || known?.pending) {
-        let current = await this.driver.state()
+        let current
+        try { current = await this.driver.state() }
+        catch (error) { if (!transientBrowserError(error)) throw error; current = {} }
         // A pending blank conversation can survive a restart without a URL.
         // Its newly recreated browser page starts at about:blank, so restore
         // the site and verify a fresh chat before preparing the first message.
@@ -294,7 +433,7 @@ export class ChatSession {
           await this.driver.updateSessionInfo?.(key, known)
         }
         if (known.pending && persistedConversationURL(site, current?.url, this.sitePreset(site).url)) { known.url = current.url; known.pending = false }
-        if (known.url && current?.url !== known.url) await this.driver.open(known.url, { headed: options.headed, signal: options.signal })
+        await this.ensurePage(site, { ...options, ...(known.url ? { url: known.url } : {}) })
       } else {
         // A new DSH session must not inherit whatever conversation the tab
         // currently shows: start a fresh web chat so one DSH session maps to
@@ -423,11 +562,14 @@ export class ChatSession {
         contextAttachmentDelivered: submitted?.contextAttachmentDelivered === true,
         contextAttachmentSkipped: submitted?.contextAttachmentSkipped === true,
       }
+      } catch (error) {
+        preservePage = error.code === 'message-send-uncertain'
+        throw error
       } finally {
         if (watchId && options.signal?.aborted && this.driver.stopGeneration) await this.driver.stopGeneration(watchId).catch(() => {})
         if (watchId && this.driver.endGenerationWatch) await this.driver.endGenerationWatch(watchId).catch(() => {})
         await uploaded?.release?.()
-        if (options.sessionKey) await this.driver.releasePage?.(queueKey)
+        if (options.sessionKey && !preservePage) await this.driver.releasePage?.(queueKey)
       }
     }, queueKey)
   }
@@ -611,6 +753,13 @@ function safeHost(url) {
   } catch {
     return String(url)
   }
+}
+
+function sameConversationURL(actual, expected) {
+  try {
+    const left = new URL(actual), right = new URL(expected)
+    return left.origin === right.origin && left.pathname.replace(/\/$/, '') === right.pathname.replace(/\/$/, '')
+  } catch { return false }
 }
 
 function persistedConversationURL(_site, value, root) {

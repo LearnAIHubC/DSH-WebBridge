@@ -1,0 +1,111 @@
+{
+  "manifest_version": 3,
+  "name": "WebAgent 1.3.2 (Web AI MCP Bridge)",
+  "version": "1.3.2",
+  "description": "通过用户可控的自动执行和自动发送，将 DeepSeek / Gemini / 智谱 / AI Studio 等网页 AI 连接本地 Nexus MCP；工具操作遵守项目权限。",
+  "permissions": [
+    "storage",
+    "activeTab",
+    "clipboardWrite"
+  ],
+  "host_permissions": [
+    "https://chat.deepseek.com/*",
+    "https://*.deepseek.com/*",
+    "https://kimi.ai/*",
+    "https://www.kimi.ai/*",
+    "https://*.kimi.ai/*",
+    "https://kimi.moonshot.cn/*",
+    "https://*.kimi.moonshot.cn/*",
+    "https://kimi.com/*",
+    "https://*.kimi.com/*",
+    "https://www.doubao.com/*",
+    "https://doubao.com/*",
+    "https://*.doubao.com/*",
+    "https://duck.ai/*",
+    "https://*.duck.ai/*",
+    "https://duckduckgo.com/*",
+    "https://*.duckduckgo.com/*",
+    "https://chat.qwen.ai/*",
+    "https://*.qwen.ai/*",
+    "https://tongyi.aliyun.com/*",
+    "https://www.dola.com/*",
+    "https://dola.com/*",
+    "https://*.dola.com/*",
+    "https://bigmodel.cn/*",
+    "https://*.bigmodel.cn/*",
+    "https://chatglm.cn/*",
+    "https://*.chatglm.cn/*",
+    "https://aistudio.google.com/*",
+    "http://127.0.0.1:*/*",
+    "http://localhost:*/*",
+    "https://gemini.google.com/*",
+    "https://zchat.z.ai/*",
+    "https://chat.z.ai/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_popup": "popup.html",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    }
+  },
+  "icons": {
+    "16": "icons/icon16.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://chat.deepseek.com/*",
+        "https://*.deepseek.com/*",
+        "https://kimi.ai/*",
+        "https://www.kimi.ai/*",
+        "https://*.kimi.ai/*",
+        "https://kimi.moonshot.cn/*",
+        "https://*.kimi.moonshot.cn/*",
+        "https://kimi.com/*",
+        "https://*.kimi.com/*",
+        "https://www.doubao.com/*",
+        "https://doubao.com/*",
+        "https://*.doubao.com/*",
+        "https://duck.ai/*",
+        "https://*.duck.ai/*",
+        "https://duckduckgo.com/chat*",
+        "https://*.duckduckgo.com/chat*",
+        "https://duckduckgo.com/aichat*",
+        "https://*.duckduckgo.com/aichat*",
+        "https://duckduckgo.com/?q=DuckDuckGo+AI+Chat*",
+        "https://chat.qwen.ai/*",
+        "https://*.qwen.ai/*",
+        "https://tongyi.aliyun.com/*",
+        "https://www.dola.com/*",
+        "https://dola.com/*",
+        "https://*.dola.com/*",
+        "https://bigmodel.cn/*",
+        "https://*.bigmodel.cn/*",
+        "https://chatglm.cn/*",
+        "https://*.chatglm.cn/*",
+        "https://aistudio.google.com/*",
+        "https://gemini.google.com/*",
+        "https://zchat.z.ai/*",
+        "https://chat.z.ai/*"
+      ],
+      "js": [
+        "review-ui.js",
+        "gemini-adapter.js",
+        "draft-output.js",
+        "command-request.js",
+        "auto-send.js",
+        "reply-gate.js",
+        "tool-json.js",
+        "content.js"
+      ],
+      "run_at": "document_idle"
+    }
+  ]
+}

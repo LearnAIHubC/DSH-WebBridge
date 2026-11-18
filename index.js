@@ -10,7 +10,7 @@
  * tools cannot drift apart. Browser control is owned by WebBridge's native
  * Playwright driver; BrowserOperator and its Codex profile remain untouched.
  */
-import { resolveSettings, ensureDirs } from './src/config.js'
+import { resolveSettings, ensureDirs, SITE_PRESETS, visibleSites } from './src/config.js'
 import { BrowserDriver } from './src/driver.js'
 import { ChatSession } from './src/session.js'
 import { createOps } from './src/ops.js'
@@ -22,7 +22,7 @@ import { writeActivation } from './src/activation.js'
 import { createToolScope } from './src/dsh.js'
 import { WebChatAdapter } from './src/provider.js'
 import { WebBridgeSetup, mountSetupService } from './src/setup.js'
-import { ChatgptModels } from './src/chatgpt-models.js'
+import { createModelSources, modelSourceFor } from './src/models/index.js'
 import { planConversationSync, appendMissingWebTurns } from './src/conversation-sync.js'
 import { ContextStore, CONTEXT_TOOL_NAME, CONTEXT_INSTRUCTIONS, CONTEXT_PARAMETERS } from './src/context.js'
 import { writeFileSync } from 'node:fs'
@@ -93,7 +93,7 @@ const TOOLS = [
     name: 'webbridge_adapter',
     op: 'adapter',
     description:
-      'Inspect or calibrate the selectors that map a site to its input box, send button and reply container. Run with probe first, then save the confirmed selectors.',
+      'Inspect or calibrate the selectors that map a site to its input box, send button and reply container. Draw boxes on the live page with annotate, or run probe, then save the confirmed selectors.',
     parameters: {
       site: { type: 'string', description: 'Site key. Defaults to the configured site.' },
       inputSelector: { type: 'string', description: 'CSS selector for the message input.' },
@@ -101,6 +101,7 @@ const TOOLS = [
       messageSelector: { type: 'string', description: 'CSS selector matching assistant reply containers.' },
       streamingSelector: { type: 'string', description: 'CSS selector present only while the reply streams.' },
       probe: { type: 'boolean', description: 'Query the live page for candidate inputs and reply nodes.' },
+      annotate: { type: 'string', description: "'start' installs a box-drawing overlay on the current page (open the site headed first); 'read' resolves the drawn boxes into unique CSS selectors — combine with save:true to persist them as the site adapter." },
       save: { type: 'boolean', description: 'Persist the provided selectors and mark the adapter verified.' },
     },
   },
@@ -136,7 +137,10 @@ export function apply(ctx, config = {}) {
 
   const log = makeLogger(ctx, settings)
   const driver = new BrowserDriver(settings, log)
-  const models = new ChatgptModels({ settings, driver, log, onChange: () => ctx.emit('llm/models-updated', 'webbridge-chatgpt') })
+  // Channel strategies: the core never branches on a site name, it dispatches
+  // through the registry (src/models/README.md is the contract).
+  const modelSources = createModelSources({ settings, driver, log, emit: id => ctx.emit('llm/models-updated', id) })
+  const models = modelSources.chatgpt
   const session = new ChatSession({ settings, driver, log, modelControl: models })
   const ops = createOps({ settings, driver, session, log })
   const contextStore = new ContextStore()
@@ -167,6 +171,11 @@ export function apply(ctx, config = {}) {
       for (const item of adapters) item.sessionState.clear()
     },
   })
+  // Login status drives the model menu: when a site flips to ready (or back),
+  // re-ask the registry for that route's catalog so only signed-in web AIs show.
+  setup.browser.onAuthChanged = site => {
+    try { ctx.emit('llm/models-updated', `webbridge-${site}`) } catch {}
+  }
   mountSetupService(ctx, setup)
   ctx.effect(() => {
     setup.initialize().catch(error => log(`[webbridge:setup] ${error.message}`))
@@ -368,15 +377,28 @@ export function apply(ctx, config = {}) {
   // second truncated text catalog would hide tools and conflict with it.
   if (settings.providers?.enabled !== false) {
     ctx.inject(['llm'], (scoped) => {
+      const visible = visibleSites(settings)
       const routes = [
-        { id: 'webbridge-chatgpt', name: 'ChatGPT 网页版', site: 'chatgpt', modelId: 'chatgpt-web', withTools: false },
-      ]
+        { id: 'webbridge-chatgpt', name: 'WebBridge · ChatGPT', site: 'chatgpt', modelId: 'chatgpt-web', withTools: false },
+        { id: 'webbridge-bigmodel', name: 'WebBridge · 智谱体验中心 (GLM-5.3)', site: 'bigmodel', modelId: 'bigmodel-web', withTools: false },
+        { id: 'webbridge-chatglm', name: 'WebBridge · 智谱清言', site: 'chatglm', modelId: 'chatglm-web', withTools: false },
+        { id: 'webbridge-zai', name: 'WebBridge · Z.ai', site: 'zai', modelId: 'zai-web', withTools: false },
+        { id: 'webbridge-deepseek', name: 'WebBridge · DeepSeek', site: 'deepseek', modelId: 'deepseek-web', withTools: false },
+        { id: 'webbridge-kimi', name: 'WebBridge · Kimi', site: 'kimi', modelId: 'kimi-web', withTools: false },
+        { id: 'webbridge-doubao', name: 'WebBridge · 豆包', site: 'doubao', modelId: 'doubao-web', withTools: false },
+        { id: 'webbridge-duckai', name: 'WebBridge · Duck.ai', site: 'duckai', modelId: 'duckai-web', withTools: false },
+        { id: 'webbridge-qwen', name: 'WebBridge · 通义千问', site: 'qwen', modelId: 'qwen-web', withTools: false },
+        { id: 'webbridge-dola', name: 'WebBridge · Dola', site: 'dola', modelId: 'dola-web', withTools: false },
+        { id: 'webbridge-gemini', name: 'WebBridge · Gemini', site: 'gemini', modelId: 'gemini-web', withTools: false },
+        { id: 'webbridge-aistudio', name: 'WebBridge · AI Studio', site: 'aistudio', modelId: 'aistudio-web', withTools: false },
+      ].filter(route => visible.includes(route.site))
       const registered = []
       const errors = []
       for (const route of routes) {
         try {
           const routeSettings = { ...settings, site: route.site }
-          const routeSession = new ChatSession({ settings: routeSettings, driver, log, modelControl: route.site === 'chatgpt' ? models : undefined })
+          const routeModels = modelSourceFor(modelSources, route.site)
+          const routeSession = new ChatSession({ settings: routeSettings, driver, log, modelControl: routeModels || undefined })
           chatSessions.add(routeSession)
           const adapter = new WebChatAdapter({
             providerId: route.id,
@@ -389,10 +411,12 @@ export function apply(ctx, config = {}) {
             toolScope,
             contextStore,
             contextAvailable: () => bridge.catalog().some(tool => tool.name === CONTEXT_TOOL_NAME),
-            modelCatalog: route.site === 'chatgpt' ? () => models.list() : undefined,
+            modelCatalog: routeModels ? () => routeModels.list() : undefined,
             accountTier: async () => {
               try { return await setup.browser.observeAccount() } catch { return setup.browser.saved.accountTier || 'unknown' }
             },
+            siteAuth: () => setup.browser.auth[route.site] || 'unknown',
+            dualReasoning: SITE_PRESETS[route.site]?.adapter?.dualReasoning === true,
           })
           const handle = scoped.llm.registerAdapter([route.id], adapter)
           adapters.add(adapter)

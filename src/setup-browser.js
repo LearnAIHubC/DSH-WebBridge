@@ -3,8 +3,20 @@ import { randomUUID } from 'node:crypto'
 import { join } from 'node:path'
 import { BridgeError } from './envelope.js'
 import { SetupControls } from './setup-controls.js'
+import { SITE_PRESETS } from './config.js'
+import { loadAdapter } from './adapters.js'
 
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms))
+
+/** Domain families per non-ChatGPT site; used to attribute the current page
+ *  to a site for login observation. */
+const SITE_HOSTS = {
+  bigmodel: ['bigmodel.cn'], chatglm: ['chatglm.cn'], zai: ['z.ai'],
+  deepseek: ['deepseek.com'], kimi: ['kimi.com', 'kimi.moonshot.cn', 'kimi.ai'],
+  doubao: ['doubao.com'], duckai: ['duck.ai', 'duckduckgo.com'],
+  qwen: ['qwen.ai', 'tongyi.aliyun.com'], dola: ['dola.com'],
+  gemini: ['gemini.google.com'], aistudio: ['aistudio.google.com'],
+}
 
 /** Manual sign-in and account observation through WebBridge's native browser. Every web resource is created by the person; nothing is auto-provisioned. */
 export class SetupBrowser {
@@ -13,7 +25,9 @@ export class SetupBrowser {
     this.controls = new SetupControls(driver)
     this.stage = text => { this.currentStage = text; stage(text) }
     this.path = join(settings.stateDir, 'setup.json'); this.saved = {}
-    this.auth = { chatgpt: 'unknown', console: 'unknown' }
+    this.auth = { chatgpt: 'unknown', console: 'unknown', bigmodel: 'unknown', chatglm: 'unknown', zai: 'unknown', deepseek: 'unknown', kimi: 'unknown', doubao: 'unknown', duckai: 'unknown', qwen: 'unknown', dola: 'unknown', gemini: 'unknown', aistudio: 'unknown' }
+    // Set by the host after login status flips, so model menus can refresh.
+    this.onAuthChanged = null
   }
   async load() {
     try { this.saved = JSON.parse(await readFile(this.path, 'utf8')) } catch (error) { if (error.code !== 'ENOENT') throw error }
@@ -23,6 +37,21 @@ export class SetupBrowser {
     if (this.driver.context === null || this.driver.pages?.size === 0) return this.saved.accountTier || 'unknown'
     const state = await this.driver.state()
     const url = String(state.url || '')
+    // Non-ChatGPT web sites carry their own login signal: a visible composer
+    // means usable, a login control or login path means manual sign-in needed.
+    for (const site of Object.keys(SITE_PRESETS)) {
+      if (site === 'chatgpt') continue
+      if (!this.webSiteMatches(site, url)) continue
+      const expression = this.siteStatusExpression(site)
+      if (!expression) continue
+      const status = await this.value(expression).catch(() => 'unknown')
+      if (status !== 'unknown' && this.auth[site] !== status) {
+        this.auth[site] = status
+        await this.persist({ auth: { ...this.auth } })
+        this.onAuthChanged?.(site)
+      }
+      return this.saved.accountTier || 'unknown'
+    }
     if (url.startsWith('https://platform.openai.com/')) {
       const ready = state.authenticated === true
       if (ready && this.auth.console !== 'ready') { this.auth.console = 'ready'; await this.persist({ auth: { ...this.auth } }) }
@@ -94,7 +123,8 @@ export class SetupBrowser {
     if (readyExpression) await this.waitFor(readyExpression, '网页未完成加载，请检查浏览器页面。')
     return state
   }
-  async login(site) {
+  async login(site, manualTimeoutMs) {
+    if (site !== 'chatgpt' && site !== 'console') return this.loginWebSite(site, manualTimeoutMs)
     this.stage(site === 'chatgpt' ? '请在浏览器登录 ChatGPT' : '请在浏览器登录 OpenAI 控制台')
     const url = site === 'chatgpt' ? 'https://chatgpt.com/' : 'https://platform.openai.com/settings/organization/api-keys'
     // Give an already signed-in SPA time to render before opening a login window.
@@ -117,6 +147,96 @@ export class SetupBrowser {
     await this.persist({ auth: { ...this.auth } })
     return { site, status: this.auth[site], url: current.url }
   }
+  /** True when the URL belongs to a non-ChatGPT web site preset. */
+  webSiteMatches(site, url) {
+    const host = (() => { try { return new URL(url).hostname.toLowerCase() } catch { return '' } })()
+    const domains = SITE_HOSTS[site] || []
+    return domains.some(domain => host === domain || host.endsWith(`.${domain}`))
+  }
+
+  /**
+   * Page expression with the site's own login signal: a visible composer and
+   * no login control means ready; a login control or /login path means the
+   * person still has to sign in.
+   */
+  siteStatusExpression(site) {
+    const preset = SITE_PRESETS[site]
+    if (!preset) return null
+    const adapter = loadAdapter(this.settings, site)
+    const inputSelector = JSON.stringify(adapter.inputSelector || '')
+    return `(() => {
+      const visible = el => { const b = el && el.getBoundingClientRect(); return Boolean(b && b.width > 20 && b.height > 8 && el.checkVisibility && el.checkVisibility({ checkOpacity: true, checkVisibilityCSS: true })) }
+      const loginControls = [...document.querySelectorAll('button, a, [role="button"]')].filter(el => visible(el) && /^(登录|登陆|登录\\s*\\/\\s*注册|注册\\s*\\/\\s*登录|log\\s?in|sign\\s?in|login)$/i.test((el.innerText || '').trim()))
+      const composer = ${inputSelector} ? [...document.querySelectorAll(${inputSelector})] : []
+      // Needs-login signals win: the un-hydrated SPA shell can briefly render
+      // a composer before the login wall takes over, so check them first.
+      if (loginControls.length || location.pathname.startsWith('/login') || /^\\/sign[-_]?in/i.test(location.pathname)) return 'needs-login'
+      if (composer.some(el => visible(el))) return 'ready'
+      return 'unknown'
+    })()`
+  }
+
+  /** Wait for the SPA to stop navigating. Zhipu's login wall is a client-side
+   *  redirect: before it lands, the un-hydrated shell briefly shows a composer
+   *  that a naive probe would misread as signed in. */
+  async settleUrl({ minimumMs = 3000, stableSamples = 3, timeoutMs = 20000 } = {}) {
+    const startedAt = Date.now()
+    let last = ''
+    let stable = 0
+    while (Date.now() - startedAt < timeoutMs) {
+      const url = String((await this.driver.state().catch(() => null))?.url || '')
+      if (url === last) stable += 1
+      else { stable = 0; last = url }
+      if (stable >= stableSamples && Date.now() - startedAt >= minimumMs) return last
+      await sleep(600)
+    }
+    return last
+  }
+
+  /** Manual sign-in for a non-ChatGPT web site: open, escalate to headed, poll. */
+  async loginWebSite(site, manualTimeoutMs = 300000) {
+    const preset = SITE_PRESETS[site]
+    if (!preset) throw new BridgeError('unknown-site', `未知站点：${site}`)
+    this.stage(`请在浏览器登录 ${preset.label}`)
+    const check = this.siteStatusExpression(site)
+    const probe = async () => (await this.value(check).catch(() => 'unknown'))
+    await this.driver.open(preset.url)
+    await this.settleUrl()
+    // Ready must hold across two probes on a settled page.
+    let readyStreak = 0
+    for (let attempt = 0; attempt < 2 && readyStreak < 2; attempt++) {
+      const status = await probe()
+      readyStreak = status === 'ready' ? readyStreak + 1 : 0
+      if (readyStreak < 2) await sleep(1500)
+    }
+    if (readyStreak < 2) {
+      await this.driver.open(preset.url, { headed: true })
+      await this.settleUrl()
+      if (this.auth[site] !== 'needs-login') {
+        this.auth[site] = 'needs-login'
+        await this.persist({ auth: { ...this.auth } })
+        this.onAuthChanged?.(site)
+      }
+      this.stage('等待手动登录，完成后会自动确认')
+      const until = Date.now() + manualTimeoutMs
+      readyStreak = 0
+      while (Date.now() < until) {
+        const status = await probe()
+        readyStreak = status === 'ready' ? readyStreak + 1 : 0
+        if (readyStreak >= 2) break
+        await sleep(1500)
+      }
+      if (readyStreak < 2) {
+        throw new BridgeError('manual-auth-timeout', `等待登录超时（${Math.round(manualTimeoutMs / 1000)} 秒），未检测到 ${preset.label} 的已登录状态；可在设置中重试。`)
+      }
+    }
+    this.auth[site] = 'ready'
+    this.onAuthChanged?.(site)
+    await this.driver.switchToHeadless?.({ allowCurrentOperation: true })
+    await this.persist({ auth: { ...this.auth } })
+    return { site, status: this.auth[site], url: preset.url }
+  }
+
   async refresh(pluginId = this.saved.pluginId) {
     if (!pluginId) throw new Error('请先连接并安装网页插件。')
     this.stage('正在刷新网页工具目录')

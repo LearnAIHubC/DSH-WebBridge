@@ -1,6 +1,21 @@
 # 发布验证
 
+## 发布包
+
+发布包使用 `npm pack --pack-destination releases` 生成。打包范围由 `package.json` 的 `files` 白名单控制，发布前应检查生成的 `.tgz` 内容，确认没有 `node_modules`、浏览器 Profile、日志、会话数据、密钥和 `work/` 临时文件。
+
+
 ## 0.2.2
+
+发布包使用项目现有 npm 打包方式生成：
+
+```powershell
+npm ci
+npm run build:client
+npm pack --pack-destination releases
+```
+
+`package.json` 的 `files` 白名单决定归档内容，因此 `node_modules`、Chrome Profile、日志、密钥和 `work/` 临时数据不会随发布包分发。发布前应检查 `releases/` 中的归档内容，并确认构建与测试结果。
 
 验证了动态菜单读取和原生推理等级接口。真实网页读取到十个组合，DSH 只显示两个模型；在所选推理等级下收到了 hi 回复。调试汇总也在运行期间成功读取。
 

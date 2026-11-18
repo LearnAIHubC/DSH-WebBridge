@@ -13,6 +13,7 @@ try {
   await page.setContent('<button onclick="window.deleted=true">Uninstall</button><button onclick="window.refreshed=true;this.disabled=true;setTimeout(()=>this.disabled=false,50)">Refresh tools</button><script>document.querySelectorAll("button")[1].__reactProps$test={children:{props:{id:"browserPluginSettings.refreshActions"}}}</script>')
   await controls.refresh()
   assert.equal(await page.evaluate(() => window.refreshed), true)
+  await assert.rejects(controls.click('button', '检查重复控件'), error => error.code === 'setup-ui-changed')
   assert.equal(await page.evaluate(() => Boolean(window.deleted)), false)
   console.log('SETUP_CONTROLS_SMOKE_OK: tool refresh clicks only the rendered action id')
 } finally { await driver.stop(); await rm(root, { recursive: true, force: true }) }

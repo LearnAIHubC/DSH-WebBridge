@@ -1,5 +1,5 @@
-import { readFileSync, writeFileSync, readdirSync, existsSync } from 'node:fs'
-import { join } from 'node:path'
+import { readFileSync, writeFileSync, mkdirSync, readdirSync, existsSync } from 'node:fs'
+import { join, dirname } from 'node:path'
 import { SITE_PRESETS, expandHome } from './config.js'
 import { BridgeError } from './envelope.js'
 import { domToMarkdown } from './markdown.js'
@@ -44,7 +44,10 @@ export function saveAdapter(settings, site, patch) {
     verified: patch?.verified ?? current.verified ?? false,
     updatedAt: new Date().toISOString(),
   }
-  writeFileSync(adapterPath(settings, site), JSON.stringify(merged, null, 2), 'utf8')
+  const file = adapterPath(settings, site)
+  // A fresh installation has no adapter directory yet; saving must create it.
+  mkdirSync(dirname(file), { recursive: true })
+  writeFileSync(file, JSON.stringify(merged, null, 2), 'utf8')
   return merged
 }
 

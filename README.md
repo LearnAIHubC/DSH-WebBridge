@@ -1,57 +1,183 @@
 # DSH-WebBridge
 
-把已登录的 ChatGPT 网页会话接入 DeepSeek Harness（DSH）。DSH 发送用户输入，插件读取网页生成中的正文并持续同步；网页真实调用 Nexus DSH 的 MCP 工具时，DSH 记录对应工具卡片。
+DSH-WebBridge 是一个 **DSH 网页模型桥接插件**。
 
-当前版本支持 Windows 和 macOS（Apple 芯片 / Intel）、Google Chrome、DSH 0.2.2-rc.3。macOS 实机验证使用 Apple 芯片；Intel 安装包选择有回归测试，尚未在 Intel Mac 上实测。付费账号的模型和推理等级从网页动态读取；免费账号保留思考与非思考。
+它通过受控的 Chrome 浏览器连接已登录的 ChatGPT 网页会话，让 DSH 可以使用网页模型；同时支持将 Nexus DSH 的 MCP 工具桥接给网页模型执行。
 
-## 安装与设置
+示例：
 
-1. 克隆此仓库，安装 Node.js 22 或更新版本，以及 Google Chrome。
-2. 在项目目录运行 `npm ci` 和 `npm run build:client`。
-3. 在 DSH 插件管理中加载项目目录。
-4. 打开「设置 → ChatGPT 网页版」，点「登录网页版」，在 WebBridge 自己的浏览器窗口中手动完成 ChatGPT 登录。
-5. 在 OpenAI 控制台自行创建 Secure MCP Tunnel 与 Runtime API Key，并在 ChatGPT 网页里创建 Nexus DSH 插件；把 Tunnel ID 填进「渠道」、密钥填进「API Key」，点「保存并连接」。获取方式见 [如何获取渠道与 API Key](docs/CHANNEL-AND-API-KEY.md)。
-6. 在 DSH 会话中选择「ChatGPT 网页版」。免费账号提供思考和非思考两种模式。
+![DSH-WebBridge](docs/images/2026-11-18_134929_464.png)
 
-macOS 桌面版也可以用安装包自带的命令加载本地插件：
+WebBridge 负责浏览器会话、网页消息同步、附件传递、上下文同步和 MCP 桥接；DSH 负责模型、权限和工具执行策略。
 
-```sh
+## 核心能力
+
+- **ChatGPT 网页模型接入**：使用已登录的 ChatGPT 网页会话作为 DSH 的模型入口。
+- **浏览器会话管理**：每个 DSH 会话使用独立的 Chrome Page。
+- **实时回复同步**：网页生成过程中持续把正文同步回 DSH。
+- **上下文同步**：通过 `dsh_get_context` 获取 DSH 的完整或增量上下文。
+- **MCP 工具桥接**：网页模型可以调用 Nexus DSH MCP 工具，并沿用 DSH 的权限与审批机制。
+- **附件支持**：支持将本轮用户提供的图片和文件上传给网页模型。
+- **调试模式**：默认无头运行，也可以切换为有头模式观察浏览器操作。
+- **跨平台**：支持 Windows 和 macOS。
+
+## 支持环境
+
+| 项目 | 状态 |
+| --- | --- |
+| Windows | ✅ |
+| macOS Apple Silicon | ✅ 已验证 |
+| macOS Intel | ⚠️ 安装包已覆盖，尚未完成 Intel 实机回归 |
+| Google Chrome | ✅ |
+| DSH | 0.2.2-rc.3 |
+| Linux | ⚠️ 当前不提供完整的密钥存储和隧道自动安装支持 |
+
+## 快速开始
+
+### 方式一：使用 releases 发布包
+
+适合普通用户或部署已经构建好的版本。
+
+发布包统一放在项目根目录的 `releases/`：
+
+```text
+DSH-WebBridge/
+└─ releases/
+   └─ dsh-webbridge-x.x.x.tgz
+```
+
+拿到发布包后，不需要携带整个源码仓库，也不需要携带个人 Chrome Profile、日志、密钥或 `work/` 临时数据。
+
+具体的 ChatGPT 登录、Tunnel、Runtime API Key 和 Nexus DSH 插件配置，请参阅 [ChatGPT 网页版设置](docs/CHATGPT-SETUP.md)。
+
+### 方式二：从源码运行
+
+需要 Node.js 22 或更高版本以及 Google Chrome。
+
+```powershell
+npm ci
+npm run build:client
+```
+
+然后在 DSH 插件管理中加载项目目录。
+
+macOS 桌面版也可以使用安装包自带的 DSH runtime：
+
+```bash
 "/Applications/DeepSeek Harness.app/Contents/Resources/runtime/cli/bin/dsh" plugin --profile desktop add "$PWD"
 ```
 
-在仓库目录执行。桌面版命令使用与 App 一致的 DSH 运行时；另装的 npm `dsh` 不负责管理 `desktop` profile。安装后可在「设置 → ChatGPT 网页版」查看。
+安装后可以在 DSH「设置 → ChatGPT 网页版」中查看。
 
-详细操作见 [ChatGPT 设置](docs/CHATGPT-SETUP.md)；隧道与密钥的获取见 [如何获取渠道与 API Key](docs/CHANNEL-AND-API-KEY.md)。
+## ChatGPT 配置
 
-## 工作方式
+首次使用时：
 
-- DSH 模型列表只显示模型名，推理等级在原生下拉框中选择。发送前真实切换网页模型与滑块；设置页可刷新列表。当前会话使用 `webbridge-*` 网页模型时，模型选择器旁会显示「同步」按钮；点击后重建该会话的网页线程，并清掉旧的 DSH 上下文游标和 MCP 会话绑定，下一条消息重新读取完整上下文。
-- 「浏览器调试」提供控制台、网络和截图汇总，命令也可通过 `webbridge_browser` 使用 `console`、`network`、`debug`、`pages`。诊断记录有数量限制，不保存请求正文。
+1. 打开 DSH「设置 → ChatGPT 网页版」。
+2. 点击「登录网页版」，在 WebBridge 打开的 Chrome 中完成 ChatGPT 登录。
+3. 在 OpenAI 控制台创建 Secure MCP Tunnel 和 Runtime API Key。
+4. 将 Tunnel ID 填入「渠道」，将 Runtime API Key 填入「API Key」。
+5. 点击「保存并连接」。
+6. 在 ChatGPT 网页中创建 Nexus DSH 插件，并将连接方式设置为 Tunnel。
+7. 在 DSH 会话中选择「ChatGPT 网页版」。
 
-- WebBridge 使用自己的 Playwright 持久化 Chrome Context。每个 DSH 会话有独立 Page，同一会话中的请求按顺序执行。
-- 默认无头运行；登录由用户在可见窗口完成，确认登录成功后再切回无头。启动 DSH 或切换调试模式不会打开历史会话；网页任务按需打开页面，完成后关闭，续聊时恢复原会话。
-- 网页输入框只发送新增用户内容和短初始化引导；完整的 DSH 模型输入通过 `dsh_get_context` 获取，包括系统提示、项目规则、技能与运行环境注入、历史 assistant 消息和工具结果。图片与文件按原文件名和字节上传。
-- 正文在生成期间通过 text-delta 进入 DSH。网页的临时轮次 ID、消息 ID 和 Markdown 列表转换均有兼容处理；完成后使用完整网页正文构建 Markdown。
-- 默认不设置 90 秒回复期限。停止按钮消失、页面回到空闲后才完成读取；取消、登录或验证错误仍会结束等待。
-- 发送顺序是用户文字与上下文引用、加号菜单中的 Nexus DSH、用户附件、发送。ChatGPT 原生 MCP 路径不再上传 `dsh-context.txt`，用户附件不会静默丢弃。兼容路径仍支持系统 TXT，跳过上传时不会把上下文标记为已送达。
-- 正式 Runtime Key 使用 Never 有效期。Windows 使用 CurrentUser DPAPI 加密，macOS 使用登录钥匙串；密钥不进入命令参数。连接失败不会反复创建资源；测试 Key 升级时保留 Tunnel ID。
-- 工具执行通过 DSH 原执行器，沿用 DSH 的权限与审批机制。网页没有调用工具时，回复直接作为正文显示。
+完整步骤和权限说明见 [ChatGPT 网页版设置](docs/CHATGPT-SETUP.md) 和 [如何获取渠道与 API Key](docs/CHANNEL-AND-API-KEY.md)。
 
-### 上下文初始化与更新
+## 浏览器模式
 
-第一轮消息自动携带 `context_id`。网页模型先调用 Nexus DSH 的 `dsh_get_context`，按 `completeness.next_cursor` 读取至 `completeness.complete=true`，再处理用户任务。项目当前工作目录也在结果的 `workspace.cwd` 中；不需要手动把项目地址和系统提示复制到输入框。工具必须在现有 MCP 工具范围内允许使用，插件不会扩大已有 allowlist。
+WebBridge 默认使用无头模式。
 
-重复注入按来源、作用范围和实际内容计算 SHA-256 指纹；消息 ID、时间和步骤编号变化不会触发刷新。项目规则继续由 DSH 的正常生命周期加载，WebBridge 不为文件操作额外插入续跑检查点。没有新用户输入、附件或有效上下文变化时，本地结束本轮，不向网页发送“继续”。规则改回先前内容仍视为变更。
+登录 ChatGPT 时会打开可见浏览器窗口；登录成功后恢复无头运行。
 
-重启后会根据真实工具调用和匹配结果恢复上下文传输回执，避免把旧分页内容嵌套进新快照。分页默认每页 32,000 字符；重复请求保留原页内容，但后续游标会指向尚未读取的页，读完后停止继续分页。
+如果需要观察浏览器操作，可以开启「浏览器调试」：
 
-每次实际模型请求都会保存独立快照，保留最终输入的消息顺序、角色、来源、内容块和工具定义历史。后续轮次可基于网页仍保留的完整快照获取增量；新建聊天、重置网页或旧快照失效时重新读取全量，并恢复需要的用户附件。只发送了网页消息、只读第一页或跳过旧 TXT 上传，都不会被当作初始化成功。
+- 浏览器窗口保持可见；
+- 可以观察页面操作；
+- 可以查看控制台、网络和页面诊断；
+- 不会修改 WebBridge 的 UA、指纹或 Chrome Profile 配置。
 
-文件 `read`、`write`、`edit` 可能触发 DSH 的目录规则加载。工具完成后，网页会先结束这一轮，让 DSH 正常经过步骤边界并刷新规则，再自动继续同一任务；已完成的工具不会因此要求重做。工具返回的 `additionalContexts` 也会同步交给网页。这个过程可能增加一次网页往返，用于保证后续操作能看到新的有效规则。
+## 智谱 / Z.ai 站点
 
-这些内容作为 MCP 工具结果进入网页模型上下文，保留其在 DSH 中的来源；它们不会改变 ChatGPT 平台本身的系统消息优先级。上下文只保存在当前插件进程内，插件重载后会在下一次请求重新生成。升级后需要重载 DSH 插件并刷新 Nexus DSH 的工具元数据，确认能看到 `dsh_get_context`。
+`bigmodel`（智谱体验中心 GLM-5.3）、`chatglm`（智谱清言）、`zai`（Z.ai）已内置为站点预设，默认选择器移植自 WebAgent 1.3.2/1.3.3。用法和 ChatGPT 一致：`webbridge_open site=bigmodel`（首次用有头模式登录一次），之后无头运行 `webbridge_ask` / `webbridge_agent`。
+
+页面改版导致选择器失效时，用标注校准，不用改代码：
+
+1. 有头打开该站点（已登录状态）；
+2. `webbridge_adapter site=<site> annotate=start`，页面右下角出现「标注」按钮；
+3. 点按钮后依次框选：输入框、发送键、回复区、停止键（最后一个可不画），画错点框右上角 ×；
+4. `webbridge_adapter site=<site> annotate=read save=true`，框内元素会被解析成唯一 CSS 选择器并保存到 `~/.dsh/webbridge/adapters/<site>.json`，立即生效。
+
+标注的网格投票与唯一选择器逻辑借自 browser-operator 的同名功能，不需要在 Chrome 里安装任何扩展。
+
+## 发布包
+
+### 发布包放在哪里？
+
+项目根目录的 `releases/` 专门用于存放可分发的发布包：
+
+```text
+releases/
+└── dsh-webbridge-x.x.x.tgz
+```
+
+如果目录不存在，先创建：
+
+```powershell
+New-Item -ItemType Directory -Force releases
+```
+
+### 如何构建发布包？
+
+在项目根目录执行：
+
+```powershell
+npm ci
+npm run build:client
+npm pack --pack-destination releases
+```
+
+完成后，生成的 `.tgz` 会直接出现在 `releases/`。
+
+发布包由 `package.json` 的 `files` 白名单控制，不应包含：
+
+- `node_modules/`
+- Chrome / Chromium Profile
+- 登录会话
+- 日志文件
+- API Key、Token 等密钥
+- `work/` 临时数据
+- 其他本机运行数据
+
+发布前的检查方法见 [发布验证](docs/RELEASE-VALIDATION.md)。
+
+## 工作原理
+
+一次典型请求大致经过以下流程：
+
+1. DSH 创建或恢复一个 ChatGPT 网页会话。
+2. WebBridge 使用独立的 Chrome Page 执行网页操作。
+3. 用户消息和本轮附件发送到网页模型。
+4. WebBridge 通过 Nexus DSH 获取完整或增量上下文。
+5. 网页模型生成正文，WebBridge 在生成过程中持续同步回 DSH。
+6. 网页模型需要工具时，通过 Nexus DSH MCP 执行。
+7. 当前任务完成后保留会话状态，下一轮继续使用。
+
+上下文分页、增量恢复、MCP 路由和快照机制等实现细节见项目 `docs/` 文档。
+
+## 开发
+
+源码修改后通常执行：
+
+```powershell
+npm ci
+npm run build:client
+```
+
+项目使用自己的 Playwright 浏览器驱动完成网页输入、点击、文件上传和页面读取，不修改或补丁 Codex BrowserOperator。
 
 ## 测试
+
+完整测试：
 
 ```powershell
 npm ci
@@ -61,19 +187,34 @@ npm run test:smoke
 npm run test:browser
 ```
 
-`npm test` 包含回复轮次、增量、列表重排、格式转换、附件、隧道与 MCP 回归，以及完整上下文分页、增量重建、跨会话隔离、初始化交付和真实步骤续接。浏览器冒烟使用独立临时 Profile，不使用个人账号。
+浏览器冒烟测试使用独立临时 Profile，不使用个人账号。
 
-发布前必须在实际 DSH 中验证长回复在生成期间持续显示，不能只凭最终全文或离线测试通过判断。验证记录见 [发布验证](docs/RELEASE-VALIDATION.md)。
+发布前还需要在实际 DSH 中验证长回复能够在生成期间持续显示，并验证 ChatGPT 网页能够正常调用 Nexus DSH 工具。具体记录见 [发布验证](docs/RELEASE-VALIDATION.md)。
 
 ## 当前限制
 
-- MCP 同时兼容旧式 `initialize + Mcp-Session-Id` 和 `2026-07-28` 无会话协议。`dsh_get_context.context_id` 是权威路由 handle：旧协议会把它绑定到 MCP session；无会话协议要求后续 DSH 工具在 MCP 参数中带 `dsh_context_id`，MCP 路由后会先剥离该字段，因此真实 DSH 工具仍只收到原业务参数。没有可验证 handle 且同时存在多个 DSH 请求时返回 `ambiguous-tool-scope`，不会猜测目标会话。
-- macOS 的系统代理支持 HTTP / HTTPS；PAC 和仅 SOCKS 的配置需要在高级设置中填写 HTTP 代理。Linux 的密钥存储与隧道自动安装尚未实现。
-- 页面结构可能改变。选择器可以校准，登录、验证码与站点额度由账号和页面决定。
-- `docs` 中早期公网隧道与架构文档保留为开发记录；当前安装步骤以本文及 `CHATGPT-SETUP.md` 为准。
+- ChatGPT 页面结构变化可能影响网页自动化。
+- 登录、验证码、人机验证和账号额度由 ChatGPT 网页及账号状态决定。
+- macOS 的系统代理支持 HTTP / HTTPS；PAC 和仅 SOCKS 的配置需要额外设置。
+- Linux 当前不提供完整的密钥存储和隧道自动安装支持。
+- MCP 和上下文相关的实现细节可能随 DSH 版本变化。
 
-## 本机数据与许可证
+## 本机数据
 
-账号 Profile、会话登记、日志及加密密钥保存在 `~/.dsh/webbridge/`，不包含在源码或发布包中。插件不读取或修改 Codex BrowserOperator 的 Profile。
+WebBridge 使用独立的本机数据目录保存配置、会话登记、浏览器 Profile、日志和加密密钥：
 
-项目使用 [AGPL-3.0-only](LICENSE)。Nexus 隧道移植说明、许可证和官方 runtime 来源见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。发布包不携带 Chrome Profile、密钥或历史代理工具。
+```text
+~/.dsh/webbridge/
+```
+
+这些数据不会进入源码仓库或发布包。
+
+WebBridge 使用自己的 Playwright 持久化 Chrome Profile，不读取或修改 Codex BrowserOperator 的 Profile。
+
+更多本机数据、密钥和隧道运行时说明见 [ChatGPT 网页版设置](docs/CHATGPT-SETUP.md)。
+
+## 许可证
+
+项目使用 [AGPL-3.0-only](LICENSE)。
+
+Nexus 隧道移植说明、许可证和官方 runtime 来源见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。

@@ -4,6 +4,21 @@ import { BridgeError } from './envelope.js'
 export class SetupControls {
   constructor(driver) { this.driver = driver }
   async page() { return this.driver.currentPage() }
+  async one(selector, purpose) {
+    const page = await this.page()
+    const controls = page.locator(selector).filter({ visible: true })
+    try { await controls.first().waitFor({ state: 'visible', timeout: 10000 }) }
+    catch (error) {
+      if (error.name !== 'TimeoutError') throw error
+    }
+    const count = await controls.count()
+    if (count !== 1) throw new BridgeError('setup-ui-changed', `${purpose}：预期 1 个控件，实际 ${count} 个。页面结构可能已变化，尚未执行此步骤。`)
+    return controls
+  }
+  async click(selector, purpose) {
+    const control = await this.one(selector, purpose)
+    await control.click({ timeout: 10000 })
+  }
   async action(id, purpose) {
     const page = await this.page()
     const controls = page.locator('button,[role="menuitem"]').filter({ visible: true })

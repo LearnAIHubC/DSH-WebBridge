@@ -1,8 +1,8 @@
 import { createHash } from 'node:crypto'
 import { readFile, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
-import { BridgeError } from './envelope.js'
-import { SetupControls } from './setup-controls.js'
+import { BridgeError } from '../envelope.js'
+import { SetupControls } from '../setup-controls.js'
 
 const CATALOG_SESSION = '__webbridge_model_catalog__'
 const TRIGGER_WAIT = 'button[data-composer-navigation-target="reasoning"], form button[aria-haspopup="menu"]'

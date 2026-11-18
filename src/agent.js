@@ -226,28 +226,65 @@ export function normalizeCall(call, toolDefs) {
 
 /** Render the compact tool list the web model is allowed to use. */
 export function renderToolList(toolDefs) {
-  const compact = toolDefs.map((definition) => ({
-    name: definition.name,
-    description: String(definition.description || '').split('\n')[0].slice(0, 160),
-    parameters: Object.fromEntries(
-      Object.entries(definition.parameters || {}).map(([key, spec]) => [key, spec?.type || 'string']),
-    ),
-  }))
+  const compact = toolDefs.map((definition) => {
+    const source = definition.parameters || {}
+    // Registry schemas arrive as full JSON Schema objects, not the flat DSL
+    // form: iterate the real parameters from .properties instead of turning
+    // the wrapper keys (type/properties/required) into bogus arguments.
+    const isJsonSchema = source?.type === 'object' && source.properties && typeof source.properties === 'object'
+    const entries = isJsonSchema ? Object.entries(source.properties) : Object.entries(source)
+    const requiredNames = isJsonSchema && Array.isArray(source.required) ? source.required : null
+    const parameters = Object.fromEntries(entries.map(([key, spec]) => {
+      const parameter = { type: spec?.type || 'string' }
+      if (spec?.description) parameter.description = String(spec.description).split('\n')[0].slice(0, 120)
+      const isRequired = requiredNames ? requiredNames.includes(key) : spec?.required === true
+      if (isRequired) parameter.required = true
+      return [key, parameter]
+    }))
+    return {
+      name: definition.name,
+      description: String(definition.description || '').split('\n')[0].slice(0, 160),
+      parameters,
+    }
+  })
   return JSON.stringify(compact)
 }
 
 export function composeMessage({ system, toolDefs, task }) {
+  const compact = JSON.parse(renderToolList(toolDefs))
+  // Teach the exact reply shapes with a copyable example built from the first
+  // real tool: models comply with a format they can see, not one they must
+  // guess (the webagent lesson: explicit format + worked example).
+  const example = compact.length
+    ? JSON.stringify([{
+        name: compact[0].name,
+        arguments: Object.fromEntries(
+          Object.entries(compact[0].parameters || {}).map(([key, spec]) => [key, `<${spec?.type || 'string'}>`]),
+        ),
+      }])
+    : '[]'
+  const defaultSystem = [
+    'You are an assistant running on the user local machine.',
+    'You can only affect this machine through the tools listed below.',
+    'Your built-in website tools (code sandboxes, web search and the like) run on the website\u2019s own servers and cannot touch this machine: the tool-call block below is the ONLY way to read or change anything locally.',
+    'Reply with exactly one of these two blocks, and nothing else:',
+    '1) To request tools:',
+    '<<<TOOL_CALLS>>>',
+    '[{"name":"<a tool from the list>","arguments":{ ... }}]',
+    '<<<END_TOOL_CALLS>>>',
+    '2) When the task is done:',
+    '<<<FINAL>>>',
+    '<your final answer in plain text>',
+    '<<<END_FINAL>>>',
+    'Example for the first tool:',
+    '<<<TOOL_CALLS>>>',
+    example,
+    '<<<END_TOOL_CALLS>>>',
+    'Never invent tool results: after a tool call, wait for the <<<TOOL_RESULT>>> block and continue from it. Do not perform destructive operations unrelated to the task.',
+  ].join('\n')
   return [
     '<<<NEXUS_SYSTEM>>>',
-    system ||
-      [
-        'You are an assistant running on the user local machine.',
-        'You can only affect this machine through the tools listed below.',
-        'Never invent tool results. When you need information, request a tool call.',
-        'A tool call is a JSON array of objects with "name" and "arguments", wrapped in the delimiters shown below.',
-        'Do not use any other tool-call syntax (no XML, no DSL, no function syntax).',
-        'Do not perform destructive operations unrelated to the task.',
-      ].join('\n'),
+    system || defaultSystem,
     '<<<END_NEXUS_SYSTEM>>>',
     '',
     '<<<NEXUS_TOOLS>>>',
@@ -261,7 +298,10 @@ export function composeMessage({ system, toolDefs, task }) {
 }
 
 export function renderToolResult({ id, name, ok, body }) {
-  const trimmed = String(body ?? '')
+  // Tool bodies from the registry can carry harness context-update sections
+  // next to the business result; the web chat needs neither, and session
+  // details have no business leaving the machine.
+  const trimmed = String(body ?? '').split('[DSH context updates]')[0].trimEnd()
   const clipped = trimmed.length > 4000 ? `${trimmed.slice(0, 4000)}\n[truncated]` : trimmed
   return [`<<<TOOL_RESULT id="${id}" name="${name}" ok="${ok ? 'true' : 'false'}">>>`, clipped, '<<<END_TOOL_RESULT>>>'].join('\n')
 }

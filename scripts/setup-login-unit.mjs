@@ -7,7 +7,7 @@ import { SetupBrowser } from '../src/setup-browser.js'
 import { WebBridgeSetup } from '../src/setup.js'
 import { BrowserDriver } from '../src/driver.js'
 import { BridgeError } from '../src/envelope.js'
-import { ChatgptModels } from '../src/chatgpt-models.js'
+import { ChatgptModels } from '../src/models/chatgpt.js'
 
 test('idle account checks, model catalogs and background refresh never launch Chrome', async () => {
   const root = await mkdtemp(join(tmpdir(), 'wb-idle-browser-'))

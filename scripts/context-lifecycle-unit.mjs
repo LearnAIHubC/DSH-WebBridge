@@ -36,7 +36,7 @@ function fixture() {
     },
     async press() {},
     async eval(expression) {
-      if (expression.includes('composerText')) return { result: { composerText: draft } }
+      if (expression.includes('composerText')) return { result: { composerCount: 1, composerText: draft } }
       const replies = threads.get(currentUrl) || []
       const turn = replies.length ? `${currentUrl}:${replies.length}` : ''
       return { result: {
@@ -49,7 +49,6 @@ function fixture() {
   const settings = resolveSettings({ site: 'chatgpt', stateDir: '', replyTimeoutMs: 1000, commandTimeoutMs: 50, pollIntervalMs: 1, stableSamples: 1 })
   const session = new ChatSession({ settings, driver })
   session.adapter = () => ({ ...SITE_PRESETS.chatgpt.adapter, pluginName: '' })
-  session.ensurePage = async () => {}
   session.assertNotRestricted = async () => {}
   session.ensureReasoning = async () => {}
   session.ensurePlugin = async () => ({})

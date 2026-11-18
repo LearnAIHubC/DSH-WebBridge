@@ -1,5 +1,6 @@
 import { SITE_PRESETS } from './config.js'
 import { loadAdapter, saveAdapter, listAdapters, buildProbeExpression } from './adapters.js'
+import { annotateOverlayExpression, annotateReadExpression, ANNOTATE_ROLES } from './annotate.js'
 import { BridgeError } from './envelope.js'
 import { ChatSession } from './session.js'
 
@@ -110,6 +111,23 @@ export function createOps({ settings, driver, session, log }) {
     async adapter(args, signal) {
       return driver.exclusive(async () => {
       const site = args.site || settings.site
+      const annotate = String(args.annotate || '')
+      if (annotate === 'start') {
+        const installed = await driver.eval(annotateOverlayExpression(), { timeoutMs: 20000, signal })
+        return { site, annotate: 'started', roles: ANNOTATE_ROLES.map(role => role.key), ...(installed.result ?? {}) }
+      }
+      if (annotate === 'read') {
+        const read = await driver.eval(annotateReadExpression(), { timeoutMs: 20000, signal })
+        const payload = read?.result ?? {}
+        const fields = { input: 'inputSelector', send: 'sendSelector', message: 'messageSelector', streaming: 'streamingSelector' }
+        const patch = {}
+        for (const box of payload.boxes || []) {
+          if (box.selector && box.unique !== false && fields[box.role]) patch[fields[box.role]] = box.selector
+        }
+        let saved = null
+        if (args.save && Object.keys(patch).length) saved = saveAdapter(settings, site, { ...patch, verified: true })
+        return { site, annotate: 'read', ...payload, patch, saved: Boolean(saved), adapter: saved ?? loadAdapter(settings, site) }
+      }
       if (args.save) {
         const saved = saveAdapter(settings, site, {
           inputSelector: args.inputSelector,

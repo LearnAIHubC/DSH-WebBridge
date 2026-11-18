@@ -1,12 +1,12 @@
 window.__ModuleLoader__.load({ id: "@local/dsh-webbridge", factory: (require) => {
 const SETUP_PACKAGE = '@local/dsh-webbridge'
 const SETUP_SERVICE = 'webbridgeSetup'
-const ACTIONS = new Set(['loginChatgpt', 'loginConsole', 'save', 'connect', 'reinstall', 'refreshTools', 'refreshModels', 'disconnect', 'setDebugMode'])
+const ACTIONS = new Set(['loginChatgpt', 'loginSite', 'setDefaultSite', 'loginConsole', 'save', 'connect', 'reinstall', 'refreshTools', 'refreshModels', 'disconnect', 'setDebugMode'])
 
 function parseSetupCommand(value) {
   if (!value || typeof value !== 'object' || !ACTIONS.has(value.action)) throw new Error('未知的 WebBridge 设置操作。')
   const result = { action: value.action }
-  for (const key of ['tunnelId', 'runtimeApiKey', 'networkMode', 'customProxy', 'workspaceId', 'projectName']) {
+  for (const key of ['site', 'tunnelId', 'runtimeApiKey', 'networkMode', 'customProxy', 'workspaceId', 'projectName']) {
     if (value[key] !== undefined) {
       if (typeof value[key] !== 'string' || value[key].length > 4096) throw new Error('设置字段格式无效。')
       result[key] = value[key].trim()
@@ -22,6 +22,7 @@ function parseSetupCommand(value) {
     if (!Number.isInteger(value.healthPort) || value.healthPort < 1024 || value.healthPort > 65535) throw new Error('健康端口应在 1024–65535 之间。')
     result.healthPort = value.healthPort
   }
+  if ((result.action === 'loginSite' || result.action === 'setDefaultSite') && !result.site) throw new Error(`${result.action} 需要指定站点。`)
   return result
 }
 
@@ -78,17 +79,43 @@ const inject = ['slots', 'remote']
 const css = `
 .wb-settings{max-width:760px;margin:0 auto;padding:22px 12px 36px;color:inherit;font:inherit}
 .wb-settings h1{font-size:28px;font-weight:650;letter-spacing:-.5px;margin:0 0 18px}.wb-settings p{font-size:13px;line-height:1.7;opacity:.68;margin:7px 0 14px}
-.wb-tabs{display:flex;gap:4px;padding:4px;border-radius:9px;background:var(--background-secondary,rgba(128,128,128,.08));border:1px solid rgba(128,128,128,.16);margin-bottom:22px}
+.wb-tabs{display:flex;gap:4px;flex-wrap:wrap;padding:4px;border-radius:9px;background:var(--background-secondary,rgba(128,128,128,.08));border:1px solid rgba(128,128,128,.16);margin-bottom:22px}
 .wb-tabs button{flex:1;border:0;background:none;color:inherit;padding:8px;border-radius:6px;cursor:pointer}.wb-tabs button[aria-selected=true]{background:var(--background-primary,Canvas);box-shadow:0 0 0 1px rgba(128,128,128,.22);font-weight:600}
 .wb-row{display:flex;align-items:center;justify-content:space-between;gap:14px;padding:16px 0;border-bottom:1px solid rgba(128,128,128,.12)}.wb-row strong{font-weight:550}.wb-row small{display:block;opacity:.6;font-size:12px;line-height:1.65;margin-top:4px}
 .wb-settings button.wb-button{border:1px solid rgba(128,128,128,.3);background:var(--background-primary,Canvas);color:inherit;border-radius:7px;padding:7px 12px;white-space:nowrap;font-size:13px;cursor:pointer}.wb-settings button.wb-primary{background:var(--text-primary,#151719);color:var(--background-primary,#fff);border-color:transparent;padding:10px 18px}.wb-settings button:disabled{opacity:.45;cursor:default}
 .wb-actions{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-top:22px}.wb-badge{display:inline-flex;align-items:center;gap:6px;font-size:12px;padding:4px 8px;border-radius:20px;background:rgba(128,128,128,.08)}.wb-dot{width:7px;height:7px;border-radius:50%;background:#9ca3af}.wb-dot[data-ready=true]{background:#20b977}
 .wb-field{display:block;margin:17px 0;font-size:13px;font-weight:500}.wb-field input,.wb-field select{display:block;box-sizing:border-box;width:100%;border:1px solid rgba(128,128,128,.3);border-radius:7px;color:inherit;background:var(--background-primary,Canvas);padding:9px 11px;margin-top:7px;font:inherit}.wb-field small{display:block;opacity:.6;font-size:12px;font-weight:400;margin-top:6px}
+.wb-site-layout{display:flex;gap:18px;align-items:flex-start;flex-wrap:wrap;margin-top:6px}
+.wb-sitelist{display:flex;flex-direction:column;gap:2px;flex:0 1 215px;padding:4px;border-radius:9px;background:var(--background-secondary,rgba(128,128,128,.08));border:1px solid rgba(128,128,128,.16)}
+.wb-sitelist button{display:flex;align-items:center;gap:8px;border:0;background:none;color:inherit;padding:8px 10px;border-radius:6px;cursor:pointer;text-align:left;font:inherit;font-size:13px;line-height:1.35}
+.wb-sitelist button[aria-selected=true]{background:var(--background-primary,Canvas);box-shadow:0 0 0 1px rgba(128,128,128,.22);font-weight:600}
+.wb-sitelist .wb-dot{flex:none}
+.wb-dot[data-state=needs-login]{background:#d97706}
+.wb-site-panel{flex:1;min-width:280px}
 .wb-notice{margin-top:18px;border:1px solid rgba(128,128,128,.18);border-radius:9px;padding:12px 14px;font-size:13px;line-height:1.6}.wb-notice[data-error=true]{color:#b74439;border-color:#b7443945;background:#b7443908}.wb-id{font-family:monospace;font-size:12px;overflow-wrap:anywhere}.wb-settings input[type=checkbox]{accent-color:currentColor;width:16px;height:16px}.wb-section-title{font-size:14px;font-weight:600;margin-top:24px}
 .wb-debug-output{max-height:360px;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere;font:12px/1.6 monospace;padding:12px;border:1px solid rgba(128,128,128,.2);border-radius:8px}.wb-debug-image{display:block;max-width:100%;height:auto;margin-top:16px;border:1px solid rgba(128,128,128,.2);border-radius:8px}
 `
 const statusNames = { 'not-configured': '未配置', stopped: '已断开', starting: '启动中', 'installing-runtime': '安装隧道客户端', connecting: '连接中', connected: '已连接', reconnecting: '正在重连', error: '连接失败', 'authentication-error': '密钥需要更新' }
 const authNames = { unknown: '尚未检查', ready: '已登录', 'needs-login': '请完成登录' }
+const WEB_SITES = [
+  { site: 'chatgpt', label: 'ChatGPT' },
+  { site: 'bigmodel', label: '智谱体验中心 (GLM-5.3)' },
+  { site: 'chatglm', label: '智谱清言' },
+  { site: 'zai', label: 'Z.ai' },
+  { site: 'deepseek', label: 'DeepSeek' },
+  { site: 'kimi', label: 'Kimi' },
+  { site: 'doubao', label: '豆包' },
+  { site: 'duckai', label: 'Duck.ai' },
+  { site: 'qwen', label: '通义千问' },
+  { site: 'dola', label: 'Dola' },
+  { site: 'gemini', label: 'Gemini' },
+  { site: 'aistudio', label: 'AI Studio' },
+]
+const TABS = [
+  ['overview', '概览'],
+  ['advanced', '高级设置'],
+  ['debug', '浏览器调试'],
+]
 
 function SyncIcon({ spinning = false }) {
   return h('svg', { viewBox: '0 0 20 20', width: 15, height: 15, fill: 'none', stroke: 'currentColor', strokeWidth: 1.7, strokeLinecap: 'round', strokeLinejoin: 'round', 'aria-hidden': true,
@@ -158,6 +185,7 @@ function BrowserDebugPanel({ readDebug }) {
 function SettingsSection({ read, execute, debug }) {
   const [state, setState] = React.useState(null)
   const [tab, setTab] = React.useState('overview')
+  const [sitePanel, setSitePanel] = React.useState('chatgpt')
   const [error, setError] = React.useState('')
   const [pending, setPending] = React.useState(false)
   const [form, setForm] = React.useState({ tunnelId: '', runtimeApiKey: '', networkMode: 'system', customProxy: '', healthPort: 18484, autoReconnect: true, autoRefreshTools: true, debugMode: false, workspaceId: '', projectName: 'Default project' })
@@ -208,7 +236,7 @@ function SettingsSection({ read, execute, debug }) {
     finally { if (mounted.current) setPending(false) }
   }
   const busy = pending || Boolean(state?.job.busy)
-  const button = (label, action, primary = false) => h('button', { type: 'button', className: `wb-button${primary ? ' wb-primary' : ''}`, disabled: busy || !state, onClick: () => run(action) }, label)
+  const button = (label, action, primary = false, extra = {}) => h('button', { type: 'button', className: `wb-button${primary ? ' wb-primary' : ''}`, disabled: busy || !state, onClick: () => run(action, extra) }, label)
   const badge = (label, ready) => h('span', { className: 'wb-badge' }, h('i', { className: 'wb-dot', 'data-ready': ready }), label)
   const row = (label, description, control) => h('div', { className: 'wb-row' }, h('div', null, h('strong', null, label), description && h('small', null, description)), control)
   const toggle = (key, label, description) => row(label, description, h('input', { type: 'checkbox', checked: form[key], disabled: busy, 'aria-label': label, onChange: event => { const value = event.target.checked; change(key, value); if (key === 'debugMode') run('setDebugMode', { debugMode: value }) } }))
@@ -221,19 +249,39 @@ function SettingsSection({ read, execute, debug }) {
     : form.debugMode
       ? '已开启；执行网页任务时显示窗口，历史会话按需打开。'
       : '已关闭；网页任务使用无头模式，历史会话按需打开。'
+  const siteRow = entry => row(entry.label, entry.site === 'chatgpt'
+    ? '在浏览器中登录，后续会话复用登录状态。'
+    : `在浏览器中登录后，DSH 模型菜单会出现 WebBridge · ${entry.label}。`,
+    h('div', { className: 'wb-actions', style: { marginTop: 0 } }, badge(authNames[state?.auth[entry.site]] || '尚未检查', state?.auth[entry.site] === 'ready'), button('登录网页版', 'loginSite', false, { site: entry.site })))
+  // Per-site tab body. Site-specific capabilities that come later (model
+  // detection for the Zhipu sites, etc.) slot in here as extra rows without
+  // touching the tab layout again.
+  const siteTab = entry => h(React.Fragment, null,
+    siteRow(entry),
+    entry.site === 'zai'
+      ? h('p', null, 'Z.ai 需要你的网络能访问 z.ai；未登录或网络不通时该模型不可用。')
+      : h('p', null, '网页结构变化导致输入框、发送键或回复区识别失效时，让 DSH 执行 webbridge_adapter 的 annotate 框选校准即可，无需改代码。'))
   return h('section', { ref: section, className: 'wb-settings', 'data-webbridge-settings': true }, h('style', null, css),
-    h('h1', null, 'ChatGPT 网页版'),
-    h('div', { className: 'wb-tabs', role: 'tablist' }, ...[['overview', '概览'], ['advanced', '高级设置'], ['debug', '浏览器调试']].map(([value, label]) => h('button', { key: value, role: 'tab', 'aria-selected': tab === value, onClick: () => setTab(value) }, label))),
+    h('h1', null, 'WebBridge'),
+    h('div', { className: 'wb-tabs', role: 'tablist' }, ...TABS.map(([value, label]) => h('button', { key: value, role: 'tab', 'aria-selected': tab === value, onClick: () => setTab(value) }, label))),
     !state && h('p', null, '正在连接 WebBridge 设置服务…'),
     tab === 'overview' && h(React.Fragment, null,
-      row('ChatGPT 网页账号', state?.accountTier === 'free' ? '免费版 · 提供思考和非思考两种模式。' : '在浏览器中登录，后续会话复用登录状态。', h('div', { className: 'wb-actions', style: { marginTop: 0 } }, badge(authNames[state?.auth.chatgpt] || '尚未检查', state?.auth.chatgpt === 'ready'), button('登录网页版', 'loginChatgpt'))),
-      row('网页模型与思考档位', state?.models?.count ? `已从网页读取 ${state.models.count} 个模型与档位组合，DSH 模型菜单会同步更新。` : '按当前账号的网页菜单读取，不预设模型名或思考档位。', button('刷新模型列表', 'refreshModels')),
-      h('div', { className: 'wb-section-title' }, '渠道与 API Key'),
-      h('p', null, '渠道填写 OpenAI 官方隧道的 Tunnel ID，API Key 填写这条隧道的 Runtime API Key。隧道、密钥和 ChatGPT 网页插件都由你自行创建，插件只用这两串值连接并检测 MCP 是否可达。'),
-      field('tunnelId', '渠道（Tunnel ID）', { placeholder: 'tunnel_…' }),
-      field('runtimeApiKey', 'API Key（Runtime API Key）', { type: 'password', placeholder: state?.tunnel.hasApiKey ? '已安全保存；留空保留现有密钥' : 'sk-…', help: '专用密钥只需要 Tunnels 的 Read 和 Use 权限。密钥在 Windows 上使用当前用户加密，在 macOS 上保存到登录钥匙串。' }),
-      h('div', { className: 'wb-actions' }, button(connected ? '重新连接' : '保存并连接', 'connect', true), badge(statusNames[state?.tunnel.status] || '未配置', connected)),
-      h('p', null, '还不知道去哪里获取？请看 ', h('a', { href: 'https://github.com/LearnAIHubC/DSH-WebBridge/blob/main/docs/CHANNEL-AND-API-KEY.md', target: '_blank', rel: 'noreferrer' }, '《如何获取渠道与 API Key》'), '。')),
+      h('div', { className: 'wb-section-title' }, '站点设置'),
+      h('div', { className: 'wb-site-layout' },
+        h('div', { className: 'wb-sitelist', role: 'listbox', 'aria-label': '网页站点' },
+          ...WEB_SITES.filter(entry => (state?.visibleSites || ['chatgpt']).includes(entry.site)).map(entry => h('button', { key: entry.site, type: 'button', role: 'option', 'aria-selected': sitePanel === entry.site, onClick: () => setSitePanel(entry.site), title: entry.label },
+            h('i', { className: 'wb-dot', 'data-ready': state?.auth[entry.site] === 'ready', 'data-state': state?.auth[entry.site] === 'needs-login' ? 'needs-login' : undefined }),
+            h('span', null, entry.label)))),
+        h('div', { className: 'wb-site-panel' },
+          sitePanel === 'chatgpt' && h(React.Fragment, null,
+            siteRow(WEB_SITES[0]),
+            row('ChatGPT 网页模型与思考档位', state?.models?.count ? `已从网页读取 ${state.models.count} 个模型与档位组合，DSH 模型菜单会同步更新。` : '按当前账号的网页菜单读取，不预设模型名或思考档位。', button('刷新模型列表', 'refreshModels')),
+            h('div', { className: 'wb-section-title' }, '渠道与 API Key'),
+            field('tunnelId', '渠道（Tunnel ID）', { placeholder: 'tunnel_…' }),
+            field('runtimeApiKey', 'API Key（Runtime API Key）', { type: 'password', placeholder: state?.tunnel.hasApiKey ? '已安全保存；留空保留现有密钥' : 'sk-…' }),
+            h('div', { className: 'wb-actions' }, button(connected ? '重新连接' : '保存并连接', 'connect', true), badge(statusNames[state?.tunnel.status] || '未配置', connected)),
+            h('p', null, '还不知道去哪里获取？请看 ', h('a', { href: 'https://github.com/LearnAIHubC/DSH-WebBridge/blob/main/docs/CHANNEL-AND-API-KEY.md', target: '_blank', rel: 'noreferrer' }, '《如何获取渠道与 API Key》'), '。')),
+          sitePanel !== 'chatgpt' && siteTab(WEB_SITES.find(entry => entry.site === sitePanel) || WEB_SITES[1])))),
     tab === 'advanced' && h(React.Fragment, null,
       h('label', { className: 'wb-field' }, '隧道网络', h('select', { value: form.networkMode, disabled: busy, onChange: event => change('networkMode', event.target.value) }, h('option', { value: 'system' }, '跟随系统代理'), h('option', { value: 'direct' }, '直接连接'), h('option', { value: 'custom' }, '自定义代理'))),
       form.networkMode === 'custom' && field('customProxy', '代理地址', { placeholder: 'http://127.0.0.1:7897' }),
@@ -261,7 +309,7 @@ function apply(ctx) {
     const sync = request => unwrap(scope.remote.webbridgeSetup.sync(request))
     scope.slots.inject('settings.section', () => scope.slots.register({
       name: 'settings.section', id: 'webbridge-chatgpt-settings', order: 21,
-      label: () => 'ChatGPT 网页版', inject: () => ({ read, execute, debug }),
+      label: () => 'WebBridge', inject: () => ({ read, execute, debug }),
     }, SettingsSection))
     scope.inject(['modelDirectories'], ui => {
       ui.slots.inject('conversation.input.right', () => ui.slots.register({

@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto'
 import { readFile } from 'node:fs/promises'
 import { TunnelSupervisor } from './tunnel.js'
 import { SetupBrowser } from './setup-browser.js'
+import { SITE_PRESETS, visibleSites } from './config.js'
 import { parseDebugQuery, parseSetupCommand, parseSyncRequest, setupRemote, SETUP_SERVICE } from './setup-contract.js'
 
 export class WebBridgeSetup {
@@ -20,6 +21,8 @@ export class WebBridgeSetup {
     try { await this.driver.restoreSessions?.() } catch (error) { this.log(`[webbridge] saved browser sessions could not be restored: ${error.message}`) }
     if (this.disposed) return
     Object.assign(this.preferences, this.browser.saved.preferences || {})
+    // The default web model is a preference, so the picker survives restarts.
+    if (this.preferences.defaultSite && SITE_PRESETS[this.preferences.defaultSite]) this.settings.site = this.preferences.defaultSite
     try { await this.tunnel.load() }
     catch (error) {
       this.storageError = '本地已有的隧道密钥无法解密或读取。请恢复本地配置或填写已有密钥；不会自动创建新隧道或 API Key。'
@@ -40,6 +43,7 @@ export class WebBridgeSetup {
       toolCount: this.bridge.status().exposed?.dsh?.length || 0,
       preferences: { ...this.preferences },
       browser: { debugMode: Boolean(this.driver.debugMode), headless: this.driver.headless, modeChangePending: Boolean(this.driver.modeChangePending), profileDir: this.driver.profileDir },
+      visibleSites: visibleSites(this.settings),
       accountTier: this.browser.saved.accountTier || 'unknown',
       models: this.models ? { count: this.models.catalog.length, checkedAt: this.models.checkedAt ? new Date(this.models.checkedAt).toISOString() : '' } : { count: 0, checkedAt: '' },
     }
@@ -62,7 +66,9 @@ export class WebBridgeSetup {
     Object.assign(this.job, { busy: true, action: command.action, stage: '等待浏览器空闲', error: '' })
     // Return immediately so settings polling stays responsive during browser work.
     this.pending = this.perform(command).then(() => {
-      this.job.stage = /login/.test(command.action) ? '登录成功，可以连接隧道'
+      this.job.stage = command.action === 'loginSite' ? '登录成功，该网页模型已可用'
+        : command.action === 'setDefaultSite' ? '默认网页模型已切换'
+        : /login/.test(command.action) ? '登录成功，可以连接隧道'
         : command.action === 'disconnect' ? '隧道已断开'
         : command.action === 'save' ? '配置已加密保存'
         : command.action === 'setDebugMode' ? this.driver.modeChangePending
@@ -85,6 +91,13 @@ export class WebBridgeSetup {
       return
     }
     if (command.action === 'setDebugMode') return this.driver.setDebugMode(command.debugMode)
+    if (command.action === 'setDefaultSite') {
+      if (!SITE_PRESETS[command.site]) throw new Error(`未知站点：${command.site}`)
+      this.preferences.defaultSite = command.site
+      this.settings.site = command.site
+      await this.browser.persist({ preferences: this.preferences })
+      return
+    }
     if (command.action === 'disconnect') { await this.tunnel.stop(); return }
     if (this.storageError && ['connect', 'reinstall', 'save'].includes(command.action) && !(command.tunnelId && command.runtimeApiKey)) throw new Error(this.storageError)
     for (const key of ['autoRefreshTools', 'workspaceId', 'projectName']) if (command[key] !== undefined) this.preferences[key] = command[key]
@@ -96,6 +109,7 @@ export class WebBridgeSetup {
     }
     return this.driver.exclusive(async () => {
       if (command.action === 'loginChatgpt') return this.browser.login('chatgpt')
+      if (command.action === 'loginSite') return this.browser.login(command.site)
       if (command.action === 'loginConsole') return this.browser.login('console')
       if (command.action === 'refreshTools') {
         await this.browser.refresh()

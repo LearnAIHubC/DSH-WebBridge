@@ -8,7 +8,7 @@ import { macSystemProxy, tunnelCommand } from '../src/tunnel.js'
 import { runtimeFiles, macRuntimeArchive } from './prepare-tunnel-runtime.mjs'
 import { detectChromeVersion } from '../src/driver.js'
 import { currentPlatform } from '../src/browser-fingerprint.js'
-import { resolveSettings, SITE_PRESETS } from '../src/config.js'
+import { resolveSettings, SITE_PRESETS, visibleSites } from '../src/config.js'
 
 test('macOS Keychain persists and updates configuration without a plaintext file', { skip: process.platform !== 'darwin' }, async () => {
   const dir = await mkdtemp(join(tmpdir(), 'wb-keychain-test-'))
@@ -81,4 +81,11 @@ test('platform defaults keep native navigator settings and the macOS new-chat sh
   assert.equal(resolveSettings().fingerprint.platform, currentPlatform())
   assert.equal(resolveSettings().fingerprint.navigator, false)
   assert.equal(SITE_PRESETS.chatgpt.newChatShortcut, process.platform === 'darwin' ? 'Meta+Shift+KeyO' : 'Control+Shift+KeyO')
+})
+
+test('site visibility defaults to ChatGPT and re-enables through config', () => {
+  assert.deepEqual(visibleSites(resolveSettings()), ['chatgpt'])
+  const reopened = resolveSettings({ sites: { visible: ['chatgpt', 'bigmodel', 'no-such-site'] } })
+  assert.deepEqual(visibleSites(reopened), ['chatgpt', 'bigmodel'])
+  assert.deepEqual(visibleSites(resolveSettings({ sites: { visible: [] } })), ['chatgpt'])
 })

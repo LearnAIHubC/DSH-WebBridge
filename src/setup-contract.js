@@ -1,11 +1,11 @@
 export const SETUP_PACKAGE = '@local/dsh-webbridge'
 export const SETUP_SERVICE = 'webbridgeSetup'
-const ACTIONS = new Set(['loginChatgpt', 'loginConsole', 'save', 'connect', 'reinstall', 'refreshTools', 'refreshModels', 'disconnect', 'setDebugMode'])
+const ACTIONS = new Set(['loginChatgpt', 'loginSite', 'setDefaultSite', 'loginConsole', 'save', 'connect', 'reinstall', 'refreshTools', 'refreshModels', 'disconnect', 'setDebugMode'])
 
 export function parseSetupCommand(value) {
   if (!value || typeof value !== 'object' || !ACTIONS.has(value.action)) throw new Error('未知的 WebBridge 设置操作。')
   const result = { action: value.action }
-  for (const key of ['tunnelId', 'runtimeApiKey', 'networkMode', 'customProxy', 'workspaceId', 'projectName']) {
+  for (const key of ['site', 'tunnelId', 'runtimeApiKey', 'networkMode', 'customProxy', 'workspaceId', 'projectName']) {
     if (value[key] !== undefined) {
       if (typeof value[key] !== 'string' || value[key].length > 4096) throw new Error('设置字段格式无效。')
       result[key] = value[key].trim()
@@ -21,6 +21,7 @@ export function parseSetupCommand(value) {
     if (!Number.isInteger(value.healthPort) || value.healthPort < 1024 || value.healthPort > 65535) throw new Error('健康端口应在 1024–65535 之间。')
     result.healthPort = value.healthPort
   }
+  if ((result.action === 'loginSite' || result.action === 'setDefaultSite') && !result.site) throw new Error(`${result.action} 需要指定站点。`)
   return result
 }
 

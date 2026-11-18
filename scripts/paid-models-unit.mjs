@@ -1,7 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { WebChatAdapter } from '../src/provider.js'
-import { paidModelKey } from '../src/chatgpt-models.js'
+import { paidModelKey } from '../src/models/chatgpt.js'
 
 const choice = (name, power, label) => ({ key: paidModelKey(name, power), modelName: name, power, label })
 function fixture(catalog, tier = 'paid') {

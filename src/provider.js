@@ -182,7 +182,7 @@ export function deriveTitle(messages) {
 }
 
 export class WebChatAdapter {
-  constructor({ providerId, displayName, modelId, session, settings, log, parseReply, toolScope, contextStore, contextAvailable, accountTier, modelCatalog }) {
+  constructor({ providerId, displayName, modelId, session, settings, log, parseReply, toolScope, contextStore, contextAvailable, accountTier, modelCatalog, siteAuth, dualReasoning }) {
     this.providerId = providerId
     this.displayName = displayName
     this.modelId = modelId
@@ -195,6 +195,13 @@ export class WebChatAdapter {
     this.contextAvailable = contextAvailable
     this.accountTier = accountTier
     this.modelCatalog = modelCatalog
+    // Login gate for non-ChatGPT sites: their models appear only after the
+    // person signs in through the settings page. ChatGPT keeps its own
+    // observeAccount flow and stays listed for continuity.
+    this.siteAuth = siteAuth || null
+    // Sites with a binary thinking toggle (DeepSeek DeepThink) expose
+    // 思考/非思考 as two DSH models, mirroring ChatGPT's free-tier pair.
+    this.dualReasoning = dualReasoning === true
     /**
      * Per DSH-session bookkeeping. One DSH session already maps to one web
      * conversation, so initial history is sent once and tool definitions are
@@ -249,11 +256,18 @@ export class WebChatAdapter {
   }
 
   async listModels(provider) {
+    // Sites the person has not signed in to stay out of the DSH model menu.
+    if (this.settings.site !== 'chatgpt' && this.siteAuth && this.siteAuth() !== 'ready') {
+      this.paidCatalog = []
+      return []
+    }
     // The registry validates every entry: provider/id/name must be non-empty
     // strings and `provider` must equal the route, or the catalog is rejected
     // with INVALID_CATALOG ("invalid or duplicate model metadata").
     const tier = this.accountTier ? await this.accountTier() : 'unknown'
-    if (this.settings.site === 'chatgpt' && tier === 'free') {
+    // ChatGPT free accounts and dual-reasoning sites (DeepSeek) expose
+    // 思考/非思考 as two models; the chosen one drives the page toggle.
+    if ((this.settings.site === 'chatgpt' && tier === 'free') || this.dualReasoning) {
       this.paidCatalog = []
       return [
         { provider, id: this.modelId, name: `${this.displayName}（思考）`, contextWindow: this.settings.providers?.contextWindow || 32000, supportsTools: true, inputModalities: ['text', 'image'] },
@@ -299,7 +313,7 @@ export class WebChatAdapter {
     return {
       provider,
       id: model,
-      name: choice ? choice.modelName : this.settings.site === 'chatgpt' ? `${this.displayName}（${model === `${this.modelId}-instant` ? '非思考' : this.paidCatalog?.length ? '网页当前设置' : '思考'}）` : this.displayName,
+      name: choice ? choice.modelName : (this.settings.site === 'chatgpt' || this.dualReasoning) ? `${this.displayName}（${model === `${this.modelId}-instant` ? '非思考' : this.paidCatalog?.length ? '网页当前设置' : '思考'}）` : this.displayName,
       ...(choice ? { reasoning: { efforts: choice.choices.map(level => ({ id: `web-${level.power}`, name: level.label })), defaultEffort: `web-${(choice.choices.find(level => level.power === choice.legacyPower) || choice.choices.find(level => level.preferred) || choice.choices[0]).power}` } } : {}),
       contextWindow: this.settings.providers?.contextWindow || 32000,
       supportsTools: true,
@@ -550,7 +564,7 @@ export class WebChatAdapter {
         } : {}),
         ...(nativeMcp ? { onProgress: publish } : {}),
         ...(attachments.length ? { attachments } : {}),
-        ...(this.settings.site === 'chatgpt' ? webModel ? { webModel } : { reasoning: options.model === `${this.modelId}-instant` ? 'off' : 'on' } : {}),
+        ...((this.settings.site === 'chatgpt' || this.dualReasoning) && !webModel ? { reasoning: options.model === `${this.modelId}-instant` ? 'off' : 'on' } : this.settings.site === 'chatgpt' && webModel ? { webModel } : {}),
       })
       const operation = this.toolScope && isMainChat ? this.toolScope.withSession(baseSessionId, ask, signal, { contextReference }) : ask()
       let result
@@ -626,4 +640,4 @@ export class WebChatAdapter {
     yield { type: 'finish', reason: { kind: 'stop' } }
   }
 }
-import { paidModelKey as paidKey } from './chatgpt-models.js'
+import { paidModelKey as paidKey } from './models/chatgpt.js'

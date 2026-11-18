@@ -15,6 +15,9 @@ function fixture({ initialUrl = 'https://chatgpt.com/c/previous', customNewChatB
   let nextThread = 0
   const keys = []
   const clicked = []
+  const filled = []
+  const opened = []
+  const logs = []
   let pluginSelected = false
   let attachment = null
   const startNewChat = () => { currentUrl = root; pluginSelected = false; attachment = null }
@@ -32,6 +35,7 @@ function fixture({ initialUrl = 'https://chatgpt.com/c/previous', customNewChatB
   const driver = {
     async state() { return { url: currentUrl, title: 'ChatGPT', manualAuth: { required: false } } },
     async open(url) {
+      opened.push(url)
       // ChatGPT restores the previous conversation when its root is reopened.
       currentUrl = url === root ? previous : url
       return this.state()
@@ -44,7 +48,7 @@ function fixture({ initialUrl = 'https://chatgpt.com/c/previous', customNewChatB
       if (customNewChatButton && selector === 'button[data-new-chat]') return startNewChat()
       throw new Error('sidebar control is hidden')
     },
-    async fillLong(_selector, text) { pendingText = text; pluginSelected = false },
+    async fillLong(_selector, text) { filled.push(text); pendingText = text; pluginSelected = false },
     async attachTextFile(name, content) { attachment = { name, content }; return { ok: true } },
     async press(key) {
       keys.push(key)
@@ -57,7 +61,7 @@ function fixture({ initialUrl = 'https://chatgpt.com/c/previous', customNewChatB
     },
     async eval(expression) {
       if (expression.includes('pluginSelected')) return { result: { pluginSelected } }
-      if (expression.includes('composerText')) return { result: { composerText: pendingText } }
+      if (expression.includes('composerText')) return { result: { composerCount: 1, composerText: pendingText } }
       const replies = threads.get(currentUrl) || []
       const turn = replies.length ? `${currentUrl}:turn-${replies.length}` : ''
       return { result: { count: replies.length, text: replies.at(-1) || '', streaming: false, url: currentUrl,
@@ -65,7 +69,7 @@ function fixture({ initialUrl = 'https://chatgpt.com/c/previous', customNewChatB
     },
   }
   const settings = resolveSettings({ site: 'chatgpt', stateDir: '', replyTimeoutMs: 1000, commandTimeoutMs: 30, pollIntervalMs: 1, stableSamples: 1 })
-  const session = new ChatSession({ settings, driver })
+  const session = new ChatSession({ settings, driver, log: message => logs.push(message) })
   session.adapter = () => ({
     ...SITE_PRESETS.chatgpt.adapter,
     pluginName: withPlugin ? 'Nexus DSH' : '',
@@ -75,7 +79,7 @@ function fixture({ initialUrl = 'https://chatgpt.com/c/previous', customNewChatB
     providerId: 'webbridge-chatgpt', displayName: 'ChatGPT', modelId: 'chatgpt-web',
     settings: { providers: {} }, session,
   })
-  return { session, provider, submitted, previous, keys, clicked }
+  return { session, provider, driver, submitted, previous, keys, clicked, filled, opened, logs }
 }
 
 async function send(provider, sessionId, content) {
@@ -144,8 +148,302 @@ test('legacy ChatGPT calibration still submits with the visible send button', as
 })
 
 test('a failed submission reports the draft staying in the composer without waiting for a reply', async () => {
-  const { session, submitted } = fixture({ rejectSubmission: true })
-  await assert.rejects(session.ask('UNSENT_MESSAGE'), (error) => error.code === 'message-not-sent')
+  const { session, submitted, clicked } = fixture({ rejectSubmission: true })
+  await assert.rejects(session.ask('UNSENT_MESSAGE'), (error) => error.code === 'message-not-sent' && error.details.attempts === 3)
+  assert.equal(submitted.length, 0)
+  assert.equal(clicked.filter(selector => selector === SITE_PRESETS.chatgpt.adapter.sendSelector).length, 3)
+})
+
+const timeout = message => Object.assign(new Error(message), { name: 'TimeoutError' })
+
+test('a missing composer reloads the original conversation before filling again', async () => {
+  const { session, driver, submitted, previous, filled, opened, logs } = fixture()
+  const fill = driver.fillLong.bind(driver)
+  let fail = true
+  driver.fillLong = async (...args) => {
+    if (fail) { fail = false; throw timeout('locator.fill: Timeout 30000ms exceeded') }
+    return fill(...args)
+  }
+  assert.equal((await session.ask('RECOVER_COMPOSER')).reply, 'RECOVER_COMPOSER')
+  assert.deepEqual(opened, [previous])
+  assert.deepEqual(filled, ['', 'RECOVER_COMPOSER'])
+  assert.equal(submitted.length, 1)
+  assert.equal(submitted[0].url, previous)
+  assert.ok(logs.some(message => message.includes('2/3')))
+})
+
+test('a disabled send button clears and refills the draft without duplicating its attachments', async () => {
+  const { session, driver, submitted, filled, opened } = fixture({ withPlugin: true })
+  const click = driver.click.bind(driver)
+  const attachments = [{ name: 'image.png', path: '/unit/image.png' }]
+  let clicks = 0
+  let uploads = 0
+  let releases = 0
+  driver.attachFiles = async files => { uploads++; assert.deepEqual(files, attachments); return { release: async () => { releases++ } } }
+  session.waitUploads = async () => {}
+  driver.click = async (selector, options) => {
+    if (selector === SITE_PRESETS.chatgpt.adapter.sendSelector && ++clicks === 1) throw timeout('locator.click: element is not enabled')
+    return click(selector, options)
+  }
+  const result = await session.ask('RECOVER_SEND', { attachments })
+  assert.equal(result.reply, 'RECOVER_SEND')
+  assert.deepEqual(filled, ['RECOVER_SEND', '', 'RECOVER_SEND'])
+  assert.equal(submitted.length, 1)
+  assert.equal(submitted[0].plugin, true)
+  assert.deepEqual(opened, [])
+  assert.equal(uploads, 1)
+  assert.equal(releases, 1)
+})
+
+test('a click that leaves the draft in place is retried instead of ending the DSH turn', async () => {
+  const { session, driver, submitted, filled } = fixture()
+  const click = driver.click.bind(driver)
+  let clicks = 0
+  driver.click = async (selector, options) => {
+    if (selector === SITE_PRESETS.chatgpt.adapter.sendSelector && ++clicks === 1) return
+    return click(selector, options)
+  }
+  await session.ask('RECOVER_UNSENT')
+  assert.deepEqual(filled, ['RECOVER_UNSENT', '', 'RECOVER_UNSENT'])
+  assert.equal(submitted.length, 1)
+})
+
+test('a send timeout after actual delivery accepts the new user turn without resending', async () => {
+  const { session, driver, submitted, filled, opened } = fixture()
+  const click = driver.click.bind(driver)
+  driver.click = async (...args) => { await click(...args); throw timeout('locator.click: navigation interrupted') }
+  assert.equal((await session.ask('ALREADY_SENT')).reply, 'ALREADY_SENT')
+  assert.equal(submitted.length, 1)
+  assert.deepEqual(filled, ['ALREADY_SENT'])
+  assert.deepEqual(opened, [])
+})
+
+test('a delivered user turn remains authoritative while the composer still shows stale text', async () => {
+  const { session, driver, submitted } = fixture()
+  const evaluate = driver.eval.bind(driver)
+  driver.eval = async expression => expression.includes('composerText')
+    ? { result: { composerCount: 1, composerText: 'DELIVERED_DRAFT' } } : evaluate(expression)
+  assert.equal((await session.ask('DELIVERED_DRAFT')).reply, 'DELIVERED_DRAFT')
+  assert.equal(submitted.length, 1)
+})
+
+test('a missing composer is not mistaken for an empty draft or permission to resend', async () => {
+  const { session, driver, clicked, filled } = fixture({ rejectSubmission: true })
+  const evaluate = driver.eval.bind(driver)
+  driver.eval = async expression => expression.includes('composerText')
+    ? { result: { composerCount: 0, composerText: '' } } : evaluate(expression)
+  await assert.rejects(session.ask('UNKNOWN_DELIVERY'), error => error.code === 'message-send-uncertain')
+  assert.equal(clicked.filter(selector => selector === SITE_PRESETS.chatgpt.adapter.sendSelector).length, 1)
+  assert.deepEqual(filled, ['UNKNOWN_DELIVERY'])
+})
+
+test('a second failed send reloads the same conversation and reapplies the selected web model', async () => {
+  const { session, driver, submitted, previous, opened } = fixture()
+  const click = driver.click.bind(driver)
+  let clicks = 0
+  let selected = 0
+  session.modelControl = { async select(model) { assert.equal(model.modelName, 'unit-model'); selected++ } }
+  driver.click = async (selector, options) => {
+    if (selector === SITE_PRESETS.chatgpt.adapter.sendSelector && ++clicks < 3) throw timeout('locator.click: element is not enabled')
+    return click(selector, options)
+  }
+  await session.ask('RECOVER_AFTER_RELOAD', { webModel: { modelName: 'unit-model' } })
+  assert.equal(submitted.length, 1)
+  assert.deepEqual(opened, [previous])
+  assert.equal(selected, 3)
+})
+
+test('reloading an unsent conversation uploads its files again and releases both upload leases', async () => {
+  const { session, driver, submitted, previous, opened } = fixture({ withPlugin: true })
+  const click = driver.click.bind(driver)
+  let clicks = 0
+  let uploads = 0
+  let releases = 0
+  const attachment = { name: 'context.txt', content: 'context' }
+  driver.attachFiles = async files => {
+    uploads++
+    assert.deepEqual(files, [attachment])
+    return { release: async () => { releases++ } }
+  }
+  session.waitUploads = async () => {}
+  driver.click = async (selector, options) => {
+    if (selector === SITE_PRESETS.chatgpt.adapter.sendSelector && ++clicks < 3) return
+    return click(selector, options)
+  }
+  const result = await session.ask('KEEP_ATTACHMENTS', { attachment })
+  assert.equal(result.contextAttachmentDelivered, true)
+  assert.equal(result.contextAttachmentSkipped, false)
+  assert.deepEqual(opened, [previous])
+  assert.equal(uploads, 2)
+  assert.equal(releases, 2)
+  assert.equal(submitted.length, 1)
+  assert.equal(submitted[0].plugin, true)
+})
+
+test('reloading does not upload a system attachment already skipped for quota', async () => {
+  const { session, driver, submitted } = fixture({ withPlugin: true })
+  const click = driver.click.bind(driver)
+  let clicks = 0
+  let uploads = 0
+  session.uploadState = async () => ({ problem: { code: 'attachment-quota-exceeded', message: 'quota' } })
+  session.dismissUploadNotice = async () => {}
+  driver.attachFiles = async () => { uploads++; throw new Error('quota-skipped files must not be uploaded') }
+  driver.click = async (selector, options) => {
+    if (selector === SITE_PRESETS.chatgpt.adapter.sendSelector && ++clicks < 3) return
+    return click(selector, options)
+  }
+  const result = await session.ask('KEEP_QUOTA_FALLBACK', { attachment: { name: 'context.txt', content: 'context' } })
+  assert.equal(result.contextAttachmentDelivered, false)
+  assert.equal(result.contextAttachmentSkipped, true)
+  assert.equal(uploads, 0)
+  assert.equal(submitted.length, 1)
+})
+
+test('persistent composer timeouts stop after three attempts and do not expose prompt text in logs', async () => {
+  const { session, driver, submitted, logs, opened } = fixture()
+  let fills = 0
+  driver.fillLong = async () => { fills++; throw timeout('locator.fill: timeout with PRIVATE_PROMPT') }
+  await assert.rejects(session.ask('PRIVATE_PROMPT'), error => error.code === 'composer-not-ready' && error.details.attempts === 3)
+  assert.equal(fills, 3)
+  assert.equal(opened.length, 2)
+  assert.equal(submitted.length, 0)
+  assert.ok(logs.every(message => !message.includes('PRIVATE_PROMPT')))
+})
+
+test('clearing a draft without creating a user turn does not count as successful delivery', async () => {
+  const { session, driver, clicked, submitted } = fixture()
+  const fill = driver.fillLong.bind(driver)
+  driver.click = async () => { await fill('', '') }
+  await assert.rejects(session.ask('LOST_DRAFT'), error => error.code === 'message-send-uncertain')
+  assert.equal(clicked.length, 0)
+  assert.equal(submitted.length, 0)
+})
+
+test('a user edit after clicking send is preserved instead of being overwritten by recovery', async () => {
+  const { session, driver, submitted, filled } = fixture()
+  const released = []
+  driver.releasePage = async key => { released.push(key) }
+  const evaluate = driver.eval.bind(driver)
+  driver.click = async () => {}
+  driver.eval = async expression => expression.includes('composerText')
+    ? { result: { composerCount: 1, composerText: 'NEW_USER_DRAFT' } } : evaluate(expression)
+  await assert.rejects(session.ask('ORIGINAL_DRAFT', { sessionKey: 'keep-draft' }), error => error.code === 'message-send-uncertain')
+  assert.equal(submitted.length, 0)
+  assert.deepEqual(filled, ['ORIGINAL_DRAFT'])
+  assert.deepEqual(released, [])
+})
+
+test('transient page reads after sending recover the receipt without another click', async () => {
+  const { session, driver, submitted, filled } = fixture()
+  session.settings.commandTimeoutMs = 300
+  const evaluate = driver.eval.bind(driver)
+  let reads = 0
+  driver.eval = async expression => {
+    if (submitted.length && reads++ < 2) throw new Error('Execution context was destroyed, most likely because of a navigation')
+    return evaluate(expression)
+  }
+  assert.equal((await session.ask('READ_RECEIPT_AGAIN')).reply, 'READ_RECEIPT_AGAIN')
+  assert.equal(submitted.length, 1)
+  assert.deepEqual(filled, ['READ_RECEIPT_AGAIN'])
+})
+
+test('a delayed send received just before retrying prevents a second fill or click', async () => {
+  const { session, driver, submitted, filled } = fixture()
+  const evaluate = driver.eval.bind(driver)
+  const click = driver.click.bind(driver)
+  let clicked = false
+  let reads = 0
+  driver.click = async () => { clicked = true }
+  driver.eval = async expression => {
+    if (clicked && !expression.includes('composerText') && ++reads === 2) await click(SITE_PRESETS.chatgpt.adapter.sendSelector)
+    return evaluate(expression)
+  }
+  assert.equal((await session.ask('LATE_DELIVERY')).reply, 'LATE_DELIVERY')
+  assert.equal(submitted.length, 1)
+  assert.deepEqual(filled, ['LATE_DELIVERY'])
+})
+
+test('send recovery on a fresh chat notifies context preparation when reopening restores an old chat', async () => {
+  const { session, driver, submitted, previous } = fixture()
+  const fill = driver.fillLong.bind(driver)
+  let fail = true
+  driver.fillLong = async (...args) => {
+    if (fail) { fail = false; throw timeout('composer is missing') }
+    return fill(...args)
+  }
+  const observations = []
+  let prepared = 0
+  await session.ask('FRESH_TASK', {
+    sessionKey: 'recover-fresh',
+    onConversation: info => observations.push({ ...info }),
+    prepareMessage: () => ({ text: `FULL_CONTEXT_${++prepared}` }),
+  })
+  assert.equal(submitted.length, 1)
+  assert.notEqual(submitted[0].url, previous)
+  assert.equal(submitted[0].text, 'FULL_CONTEXT_2')
+  assert.equal(observations[1].reason, 'send-recovery')
+  assert.notEqual(observations[0].generation, observations[1].generation)
+})
+
+test('cancelling recovery stops before another fill or click', async () => {
+  const { session, driver, submitted, filled } = fixture()
+  const controller = new AbortController()
+  driver.fillLong = async () => { controller.abort(); throw timeout('composer is missing') }
+  await assert.rejects(session.ask('CANCEL_RECOVERY', { signal: controller.signal }), error => error.code === 'aborted')
+  assert.deepEqual(filled, [])
+  assert.equal(submitted.length, 0)
+})
+
+test('cancelling while delivery is being checked interrupts the polling delay', async () => {
+  const { session, filled } = fixture({ rejectSubmission: true })
+  session.settings.commandTimeoutMs = 60000
+  const controller = new AbortController()
+  const pending = session.ask('CANCEL_CONFIRMATION', { signal: controller.signal })
+  setTimeout(() => controller.abort(), 5)
+  await assert.rejects(pending, error => error.code === 'aborted')
+  assert.deepEqual(filled, ['CANCEL_CONFIRMATION'])
+})
+
+test('a restored conversation checks its login state before filling or sending', async () => {
+  const { session, driver, filled } = fixture()
+  session.conversations.set('chatgpt:expired', { url: 'https://chatgpt.com/c/previous' })
+  driver.state = async () => ({ url: 'https://chatgpt.com/c/previous', manualAuth: { required: true, kind: 'login' } })
+  await assert.rejects(session.ask('EXPIRED_LOGIN', { sessionKey: 'expired' }), error => error.code === 'auth-required:login')
+  assert.deepEqual(filled, [])
+})
+
+test('transient connection errors while restoring a conversation retry its saved address', async () => {
+  const { session, driver, submitted, previous, opened } = fixture({ initialUrl: 'https://example.com/' })
+  session.conversations.set('chatgpt:restore', { url: previous })
+  const open = driver.open.bind(driver)
+  let attempts = 0
+  driver.open = async (...args) => { attempts++; if (attempts === 1) throw new Error('page.goto: net::ERR_CONNECTION_RESET'); return open(...args) }
+  await session.ask('RECOVER_CONNECTION', { sessionKey: 'restore' })
+  assert.equal(attempts, 2)
+  assert.deepEqual(opened, [previous])
+  assert.equal(submitted[0].url, previous)
+})
+
+test('a failed first state read reconnects an existing session before sending', async () => {
+  const { session, driver, submitted, previous } = fixture()
+  session.conversations.set('chatgpt:reconnect', { url: previous })
+  const state = driver.state.bind(driver)
+  let reads = 0
+  driver.state = async () => { if (++reads === 1) throw new Error('Target page, context or browser has been closed'); return state() }
+  await session.ask('RECONNECT_PAGE', { sessionKey: 'reconnect' })
+  assert.equal(submitted.length, 1)
+  assert.equal(submitted[0].url, previous)
+})
+
+test('a missing saved conversation cannot redirect a task into another conversation', async () => {
+  const { session, driver, submitted, filled } = fixture({ initialUrl: 'https://example.com/' })
+  session.conversations.set('chatgpt:missing', { url: 'https://chatgpt.com/c/missing' })
+  const open = driver.open.bind(driver)
+  let attempts = 0
+  driver.open = async () => { attempts++; return open('https://chatgpt.com/') }
+  await assert.rejects(session.ask('WRONG_CONVERSATION', { sessionKey: 'missing' }), error => error.code === 'page-not-ready' && error.details.attempts === 3)
+  assert.equal(attempts, 3)
+  assert.deepEqual(filled, [])
   assert.equal(submitted.length, 0)
 })
 

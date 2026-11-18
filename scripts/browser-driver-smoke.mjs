@@ -5,6 +5,7 @@ import { join } from 'node:path'
 import { BrowserDriver } from '../src/driver.js'
 import { waitForReply } from '../src/detect.js'
 import { WebChatAdapter } from '../src/provider.js'
+import { ChatSession } from '../src/session.js'
 
 const root = await mkdtemp(join(tmpdir(), 'webbridge-native-pages-'))
 const settings = {
@@ -53,6 +54,19 @@ try {
     await driver.eval('document.querySelector("button").click()')
     assert.equal((await driver.eval('window.__webbridgeGenerationWatch.stopped')).result, false)
     await driver.endGenerationWatch('synthetic-stop')
+    await pageA.setContent(`<script>window.fills = 0; window.sends = 0</script>
+      <div class="ProseMirror" contenteditable="true" oninput="if(this.textContent.trim() && ++window.fills === 2) document.querySelector('button').disabled = false"></div>
+      <button aria-label="Send" disabled onclick="window.sends++; const input = document.querySelector('.ProseMirror'); const row = document.createElement('div'); row.setAttribute('data-content-search-unit-key', 'retry-turn:0:user'); row.textContent = input.textContent; document.body.appendChild(row); input.textContent = ''; this.disabled = true">Send</button>`)
+    const submissionSession = new ChatSession({ settings: { commandTimeoutMs: 150 }, driver })
+    const submissionAdapter = { inputSelector: 'div.ProseMirror', sendSelector: 'button[aria-label="Send"]', messageSelector: '.reply', matchReplyToUserTurn: true }
+    const retried = await submissionSession.submit('RECOVER_NATIVE_DISABLED_SEND', 'chatgpt', submissionAdapter)
+    assert.equal(retried.userTurnKey, 'retry-turn')
+    assert.deepEqual((await driver.eval('({ fills: window.fills, sends: window.sends })')).result, { fills: 2, sends: 1 })
+    await pageA.setContent(`<div class="ProseMirror" contenteditable="true"></div>
+      <button aria-label="Send" onclick="const input = document.querySelector('.ProseMirror'); const row = document.createElement('div'); row.setAttribute('data-content-search-unit-key', 'delivered-turn:0:user'); row.textContent = input.textContent + ' Nexus DSH'; document.body.appendChild(row); input.remove()">Send</button>`)
+    const delivered = await submissionSession.submit('NATIVE_DELIVERY_WITH_APP', 'chatgpt', { ...submissionAdapter, pluginName: 'Nexus DSH' })
+    assert.equal(delivered.userTurnKey, 'delivered-turn')
+    assert.equal(await pageA.locator('.ProseMirror').count(), 0)
     await pageA.setContent('<div data-talvt-turn-state="generating"><div data-content-search-unit-key="native-turn:0:user">question</div><div data-content-search-unit-key="native-turn:0:assistant"><div class="reply" data-markdown-text-style="assistant-message">Partial native stop</div></div></div><button aria-label="Stop generating" onclick="this.remove()">Stop</button>')
     let cancelledSession = ''
     const provider = new WebChatAdapter({

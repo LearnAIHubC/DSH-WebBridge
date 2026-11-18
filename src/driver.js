@@ -1,10 +1,11 @@
 import { chromium } from 'playwright-core'
 import { AsyncLocalStorage } from 'node:async_hooks'
 import { createHash } from 'node:crypto'
-import { existsSync, readdirSync } from 'node:fs'
+import { cpSync, existsSync, readdirSync } from 'node:fs'
 import { mkdir, readFile, writeFile, rm, copyFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { basename, dirname, join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { BridgeError } from './envelope.js'
 import { buildFingerprintScript, buildUaMetadata, buildUserAgent, defaultFingerprint } from './browser-fingerprint.js'
 import { BrowserDiagnostics, diagnosticText, diagnosticUrl } from './browser-diagnostics.js'
@@ -113,6 +114,24 @@ export class BrowserDriver {
     return { debugMode: this.debugMode, headless: this.headless, restarted: false, pending: this.modeChangePending }
   }
 
+  /**
+   * Deploy the bundled WebAgent extension to a stable path once (see
+   * docs/WEBAGENT-EXTENSION.md). The folder must never move afterwards,
+   * because chrome://extensions keeps pointing at the install path.
+   */
+  async ensureBundledExtension() {
+    try {
+      const source = join(dirname(fileURLToPath(import.meta.url)), '..', 'third_party', 'webagent')
+      if (!existsSync(join(source, 'manifest.json'))) return
+      const target = join(this.stateDir, 'webagent-extension')
+      if (existsSync(join(target, 'manifest.json'))) return
+      cpSync(source, target, { recursive: true })
+      this.log(`[webbridge] bundled WebAgent extension deployed to ${target}`)
+    } catch (error) {
+      this.log(`[webbridge] extension deploy failed: ${error.message}`)
+    }
+  }
+
   async ensureContext(forceHeaded = false) {
     if (this.disposed) throw new BridgeError('browser-closed', '浏览器已停止。')
     await this.loadRegistry()
@@ -120,6 +139,7 @@ export class BrowserDriver {
     if (this.contextPromise) return this.contextPromise
     this.contextPromise = (async () => {
       await mkdir(this.profileDir, { recursive: true })
+      await this.ensureBundledExtension()
       const executablePath = this.executablePath
       if (!executablePath) throw new BridgeError('chrome-not-found', '找不到 Chrome，请安装 Google Chrome 或设置 browserExecutablePath。')
       const fingerprint = this.settings.fingerprint || defaultFingerprint()
@@ -131,11 +151,24 @@ export class BrowserDriver {
         '--disable-blink-features=AutomationControlled', '--no-first-run', '--no-default-browser-check',
         '--disable-infobars', '--disable-dev-shm-usage', '--ignore-certificate-errors',
       ]
+      // Branded Google Chrome >= 136 ignores --load-extension, so there the
+      // extension only runs after the one-time manual install described in
+      // docs/WEBAGENT-EXTENSION.md. Chromium/Edge builds still honour these
+      // switches, which makes the same bundle zero-touch on them. On Chrome
+      // the switches are simply ignored.
+      const extensionDir = join(this.stateDir, 'webagent-extension')
+      if (existsSync(join(extensionDir, 'manifest.json'))) {
+        args.push(`--disable-extensions-except=${extensionDir}`, `--load-extension=${extensionDir}`)
+      }
       const headed = forceHeaded || this.debugMode
       this.context = await chromium.launchPersistentContext(this.profileDir, {
         headless: !headed, executablePath, viewport: { width: 1440, height: 900 },
         acceptDownloads: true, locale, ...(timezone ? { timezoneId: timezone } : {}),
         ignoreHTTPSErrors: true, args,
+        // Playwright passes --disable-extensions by default, which would also
+        // kill the extension installed into this WebBridge-owned profile.
+        // Drop only that one switch; nothing else in this profile depends on it.
+        ignoreDefaultArgs: ['--disable-extensions'],
       })
       const context = this.context
       const applyUa = async page => {
