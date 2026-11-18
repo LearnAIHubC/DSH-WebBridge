@@ -76,7 +76,7 @@ export const SITE_PRESETS = {
     url: 'https://chatgpt.com/',
     adapter: {
       inputSelector: 'div.ProseMirror',
-      sendSelector: 'button[data-testid="send-button"], form button[type="submit"]',
+      sendSelector: 'button[aria-label="Send"], button[aria-label="发送"], button[data-testid="send-button"], button[aria-label="Send prompt"], button[aria-label="发送提示词"], form button[type="submit"]',
       messageSelector: '[class*="MarkdownRoot"]',
       streamingSelector: '',
       stripPrompt: false,
