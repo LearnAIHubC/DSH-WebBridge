@@ -70,13 +70,17 @@ export function tunnelCommand(config, { runtimePath, mcpUrl, mcpToken, proxy, en
   for (const name of Object.keys(childEnv)) {
     if (/^(HTTP_PROXY|HTTPS_PROXY|ALL_PROXY|TUNNEL_CLIENT_HTTP_PROXY|CONTROL_PLANE_HTTP_PROXY|NO_PROXY)$/i.test(name)) delete childEnv[name]
   }
+  // Keep the companion path in the separator style of the runtime path itself;
+  // path.join would rewrite POSIX-style input into Windows separators.
+  const cloudflaredName = runtimePath.endsWith('.exe') ? 'cloudflared.exe' : 'cloudflared'
+  const separator = runtimePath.includes('/') ? '/' : '\\'
   Object.assign(childEnv, {
     CONTROL_PLANE_API_KEY: config.runtimeApiKey, CONTROL_PLANE_TUNNEL_ID: config.tunnelId,
     MCP_SERVER_URL: mcpUrl, LOCALBRIDGE_MCP_AUTH: `Bearer ${mcpToken}`,
     MCP_EXTRA_HEADERS: 'Authorization: env:LOCALBRIDGE_MCP_AUTH',
     HARPOON_ADDITIONAL_TRANSPORTS: 'http-streamable', HARPOON_ALLOW_PLAINTEXT_HTTP: 'true',
     HARPOON_MAX_RESPONSE_BYTES: '102400', HEALTH_LISTEN_ADDR: `127.0.0.1:${config.healthPort}`,
-    CLOUDFLARED_PATH: join(dirname(runtimePath), runtimePath.endsWith('.exe') ? 'cloudflared.exe' : 'cloudflared'), NO_PROXY: '127.0.0.1,localhost,::1',
+    CLOUDFLARED_PATH: `${dirname(runtimePath)}${separator}${cloudflaredName}`, NO_PROXY: '127.0.0.1,localhost,::1',
   })
   if (proxy) childEnv.CONTROL_PLANE_HTTP_PROXY = proxy
   return { args, options: { env: childEnv, cwd: dirname(runtimePath), windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] } }
