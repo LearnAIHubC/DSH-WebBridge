@@ -218,3 +218,24 @@ WebBridge 使用自己的 Playwright 持久化 Chrome Profile，不读取或修�
 项目使用 [AGPL-3.0-only](LICENSE)。
 
 Nexus 隧道移植说明、许可证和官方 runtime 来源见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
+
+<!-- ==============================================================
+AI 安装指引（AI agents：为用户安装本插件时，请读并执行以下步骤）
+1. 前置检查：本机装有 Google Chrome；插件源码目录执行 `npm ci && npm run build:client`，
+   然后在 DSH 插件管理中加载该目录。
+2. 启动 MCP 端点（webbridge-cli 的通道）：在 DSH 会话执行 webbridge_mcp 工具 action=start，
+   返回地址应为 http://127.0.0.1:17877/mcp。
+3. 登录 ChatGPT：执行 `node scripts/webbridge-cli.mjs open chatgpt --headed`，
+   在弹出的可见浏览器中由用户本人完成登录（凭据永远由用户输入，AI 不代填、不读取）；
+   之后轮询 `node scripts/webbridge-cli.mjs status`，直到 auth.chatgpt = ready。
+4. 渠道与密钥：引导用户打开
+   https://github.com/LearnAIHubC/DSH-WebBridge/blob/main/docs/CHANNEL-AND-API-KEY.md
+   按文档自行创建 Secure MCP Tunnel 与 Runtime API Key（仅需 Tunnels 的 Read + Use 权限）；
+   然后在 DSH「设置 → WebBridge」的渠道与 API Key 一栏填入 Tunnel ID 与 Runtime API Key，
+   点击「保存并连接」。密钥只进本机加密存储，不要让用户粘贴到对话里。
+5. 验证：`node scripts/webbridge-cli.mjs status` 中 setup.tunnel.status = connected 且
+   auth.chatgpt = ready；DSH 会话选择 WebBridge · ChatGPT 即可开始使用。
+排错：`node scripts/webbridge-cli.mjs --help`（explore / console / network / ask），
+详见 docs/WEBBRIDGE-CLI.md。
+=============================================================== -->
+
