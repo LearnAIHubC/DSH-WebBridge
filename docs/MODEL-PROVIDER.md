@@ -34,7 +34,7 @@ handle()                               // 注销
 @local/dsh-webbridge
 └─ provider: webbridge-chatgpt
    ├─ ChatSession(chatgpt)
-   ├─ Nexus DSH 原生 MCP
+   ├─ ChatGPT 原生 MCP（Tunnel）
    ├─ dsh_get_context 上下文初始化与增量更新
    └─ ChatGPT 网页正文流式同步
 ```
@@ -44,7 +44,7 @@ handle()                               // 注销
 1. 解析账号档位与所选网页模型；需要时在发送前切换模型和推理等级。
 2. 为每个 DSH session 恢复或新建独立 ChatGPT 会话。
 3. 输入框只发送新增用户内容和短 `context_id` 引导；完整系统提示、项目规则、历史和工具目录通过 `dsh_get_context` 读取。
-4. ChatGPT 在网页侧通过 Nexus DSH MCP 调用工具。WebBridge 继续使用 DSH 原执行器，因此权限、审批和工具历史保持不变。
+4. ChatGPT 在网页侧通过其桥接插件的原生 MCP 连接调用工具。WebBridge 继续使用 DSH 原执行器，因此权限、审批和工具历史保持不变。
 5. 网页生成期间持续产出 `text-delta`；完成后用完整网页正文构建最终文本块。
 6. 登录、验证、发送失败、上下文未完整读取或网页停止生成时，返回稳定错误，不把旧回复当成本轮结果。
 

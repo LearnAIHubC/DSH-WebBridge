@@ -2,7 +2,7 @@
 
 DSH-WebBridge 是一个 **DSH 网页模型桥接插件**。
 
-它通过受控的 Chrome 浏览器连接已登录的 ChatGPT 网页会话，让 DSH 可以使用网页模型；同时支持将 Nexus DSH 的 MCP 工具桥接给网页模型执行。
+它通过受控的 Chrome 浏览器连接已登录的 ChatGPT 网页会话，让 DSH 可以使用网页模型；同时支持把 DSH 工具通过 MCP 桥接给网页模型执行。
 
 示例：
 
@@ -16,7 +16,7 @@ WebBridge 负责浏览器会话、网页消息同步、附件传递、上下文�
 - **浏览器会话管理**：每个 DSH 会话使用独立的 Chrome Page。
 - **实时回复同步**：网页生成过程中持续把正文同步回 DSH。
 - **上下文同步**：通过 `dsh_get_context` 获取 DSH 的完整或增量上下文。
-- **MCP 工具桥接**：网页模型可以调用 Nexus DSH MCP 工具，并沿用 DSH 的权限与审批机制。
+- **MCP 工具桥接**：网页模型可以调用 DSH 工具，并沿用 DSH 的权限与审批机制。
 - **附件支持**：支持将本轮用户提供的图片和文件上传给网页模型。
 - **调试模式**：默认无头运行，也可以切换为有头模式观察浏览器操作。
 - **跨平台**：支持 Windows 和 macOS。
@@ -48,7 +48,7 @@ DSH-WebBridge/
 
 拿到发布包后，不需要携带整个源码仓库，也不需要携带个人 Chrome Profile、日志、密钥或 `work/` 临时数据。
 
-具体的 ChatGPT 登录、Tunnel、Runtime API Key 和 Nexus DSH 插件配置，请参阅 [ChatGPT 网页版设置](docs/CHATGPT-SETUP.md)。
+具体的 ChatGPT 登录、Tunnel 与 Runtime API Key 配置，请参阅 [ChatGPT 网页版设置](docs/CHATGPT-SETUP.md)。
 
 ### 方式二：从源码运行
 
@@ -78,7 +78,7 @@ macOS 桌面版也可以使用安装包自带的 DSH runtime：
 3. 在 OpenAI 控制台创建 Secure MCP Tunnel 和 Runtime API Key。
 4. 将 Tunnel ID 填入「渠道」，将 Runtime API Key 填入「API Key」。
 5. 点击「保存并连接」。
-6. 在 ChatGPT 网页中创建 Nexus DSH 插件，并将连接方式设置为 Tunnel。
+6. 在 ChatGPT 网页中创建桥接插件，并将连接方式设置为 Tunnel。
 7. 在 DSH 会话中选择「ChatGPT 网页版」。
 
 完整步骤和权限说明见 [ChatGPT 网页版设置](docs/CHATGPT-SETUP.md) 和 [如何获取渠道与 API Key](docs/CHANNEL-AND-API-KEY.md)。
@@ -155,9 +155,9 @@ npm pack --pack-destination releases
 1. DSH 创建或恢复一个 ChatGPT 网页会话。
 2. WebBridge 使用独立的 Chrome Page 执行网页操作。
 3. 用户消息和本轮附件发送到网页模型。
-4. WebBridge 通过 Nexus DSH 获取完整或增量上下文。
+4. WebBridge 通过 DSH 上下文工具获取完整或增量上下文。
 5. 网页模型生成正文，WebBridge 在生成过程中持续同步回 DSH。
-6. 网页模型需要工具时，通过 Nexus DSH MCP 执行。
+6. 网页模型需要工具时，通过 MCP 桥接执行。
 7. 当前任务完成后保留会话状态，下一轮继续使用。
 
 上下文分页、增量恢复、MCP 路由和快照机制等实现细节见项目 `docs/` 文档。
@@ -187,7 +187,7 @@ npm run test:browser
 
 浏览器冒烟测试使用独立临时 Profile，不使用个人账号。
 
-发布前还需要在实际 DSH 中验证长回复能够在生成期间持续显示，并验证 ChatGPT 网页能够正常调用 Nexus DSH 工具。具体记录见 [发布验证](docs/RELEASE-VALIDATION.md)。
+发布前还需要在实际 DSH 中验证长回复能够在生成期间持续显示，并验证 ChatGPT 网页能够正常调用 DSH 工具。具体记录见 [发布验证](docs/RELEASE-VALIDATION.md)。
 
 ## 当前限制
 

@@ -14,10 +14,10 @@ Runtime Key 仅需 Tunnels 的 **Read、Use**。这与 ChatGPT 对 DSH 工具的
 
 「保存并连接」只做三件事：加密保存两串值、启动官方 tunnel-client、检测 MCP 是否可达（`/readyz` 与控制面轮询）。隧道、密钥和网页插件的创建都在网页侧由你手动完成；网页端工具目录的维护（权限与刷新）也在 ChatGPT 网页里操作。
 
-## 隧道与 Nexus 的对应关系
+## 隧道 runtime 说明
 
-- 官方 `tunnel-client-runtime-cloudflared` v0.0.14，启动参数和环境变量与 Nexus 相同。
-- 优先使用插件打包或已经安装的 runtime；Windows 也可复用 Nexus runtime。缺少时下载官方 v0.0.14，并校验固定的 ZIP SHA-256，保留 LICENSE / NOTICE 和 companion manifest。macOS 按 Node 进程架构选择 arm64 或 amd64，安装后设置可执行权限。
+- 官方 `tunnel-client-runtime-cloudflared` v0.0.14，启动参数和环境变量沿用上游项目（来源见 THIRD_PARTY_NOTICES.md）。
+- 优先使用插件打包或已经安装的 runtime；Windows 也可复用上游项目的 runtime（来源见 THIRD_PARTY_NOTICES.md）。缺少时下载官方 v0.0.14，并校验固定的 ZIP SHA-256，保留 LICENSE / NOTICE 和 companion manifest。macOS 按 Node 进程架构选择 arm64 或 amd64，安装后设置可执行权限。
 - 隧道客户端主动向 OpenAI 建立连接，不需要用户拥有公网 IP、域名或开放入站端口。
 - API Key 只通过子进程环境变量传入，本机 MCP Bearer 通过独立请求头注入；两者都不会进入命令参数或设置页状态。
 - 外网代理只用于控制面，本地 MCP 始终通过回环直连。
@@ -37,7 +37,7 @@ WebBridge 不会补丁 BrowserOperator。上传、点击、输入和页面读取
 
 ## 发送失败时自动恢复
 
-找不到输入框、发送按钮暂时不可用，或点击后消息仍留在输入框时，插件会先检查网页和本轮用户消息，再尝试恢复。一次发送最多尝试三次：确认未发出后清空重填，仍失败则重新打开原会话，恢复模型、Nexus DSH 和本轮附件后再试。恢复旧会话时也会检查登录状态。
+找不到输入框、发送按钮暂时不可用，或点击后消息仍留在输入框时，插件会先检查网页和本轮用户消息，再尝试恢复。一次发送最多尝试三次：确认未发出后清空重填，仍失败则重新打开原会话，恢复模型、桥接插件与本轮附件后再试。恢复旧会话时也会检查登录状态。
 
 消息已经出现在对话中时，即使点击报告超时，也会继续等待这条消息的回复。页面短暂重绘或读取失败时会重新检查；输入框消失或变空本身不算发送成功。始终无法确认发送结果时，会保留现场并说明原因，避免重复发送或覆盖用户新写的内容。
 
