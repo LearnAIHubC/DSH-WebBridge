@@ -63,8 +63,8 @@ try {
     assert.equal(retried.userTurnKey, 'retry-turn')
     assert.deepEqual((await driver.eval('({ fills: window.fills, sends: window.sends })')).result, { fills: 2, sends: 1 })
     await pageA.setContent(`<div class="ProseMirror" contenteditable="true"></div>
-      <button aria-label="Send" onclick="const input = document.querySelector('.ProseMirror'); const row = document.createElement('div'); row.setAttribute('data-content-search-unit-key', 'delivered-turn:0:user'); row.textContent = input.textContent + ' Nexus DSH'; document.body.appendChild(row); input.remove()">Send</button>`)
-    const delivered = await submissionSession.submit('NATIVE_DELIVERY_WITH_APP', 'chatgpt', { ...submissionAdapter, pluginName: 'Nexus DSH' })
+      <button aria-label="Send" onclick="const input = document.querySelector('.ProseMirror'); const row = document.createElement('div'); row.setAttribute('data-content-search-unit-key', 'delivered-turn:0:user'); row.textContent = input.textContent + ' WebBridge DSH'; document.body.appendChild(row); input.remove()">Send</button>`)
+    const delivered = await submissionSession.submit('NATIVE_DELIVERY_WITH_APP', 'chatgpt', { ...submissionAdapter, pluginName: 'WebBridge DSH' })
     assert.equal(delivered.userTurnKey, 'delivered-turn')
     assert.equal(await pageA.locator('.ProseMirror').count(), 0)
     await pageA.setContent('<div data-talvt-turn-state="generating"><div data-content-search-unit-key="native-turn:0:user">question</div><div data-content-search-unit-key="native-turn:0:assistant"><div class="reply" data-markdown-text-style="assistant-message">Partial native stop</div></div></div><button aria-label="Stop generating" onclick="this.remove()">Stop</button>')

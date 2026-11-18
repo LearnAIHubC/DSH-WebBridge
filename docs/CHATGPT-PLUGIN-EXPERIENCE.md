@@ -1,5 +1,5 @@
 ---
-site: ChatGPT (Nexus DSH 插件配置)
+site: ChatGPT (WebBridge DSH 插件配置)
 domain: chatgpt.com
 updated: 2026-11-18
 confidence: medium
@@ -8,7 +8,7 @@ app: dsh-webbridge-chatgpt-setup
 tags: [chatgpt, connector, tunnel, headless]
 ---
 
-# ChatGPT 网页端 Nexus DSH 插件配置经验（AI 装机专用）
+# ChatGPT 网页端 WebBridge DSH 插件配置经验（AI 装机专用）
 
 > 本文件是 AI 的操作经验，不是人看的教程。执行工具为 `node scripts/webbridge-cli.mjs`
 > （经插件 MCP 端点驱动登录态浏览器）。**不要去读 CHANNEL-AND-API-KEY.md 人版文档。**
@@ -26,16 +26,16 @@ tags: [chatgpt, connector, tunnel, headless]
    加密保存到本机；用户只需在 DSH「设置 → WebBridge」点一次「保存并连接」。
    验证 `status` 里 `setup.tunnel.status = connected`。
 3. 隧道连通验证：`status` 里 `setup.tunnel.status = connected`。
-4. **创建 Nexus DSH 插件（AI 驱动，无头）**：
+4. **创建 WebBridge DSH 插件（AI 驱动，无头）**：
    a. `open https://chatgpt.com/settings/plugins-settings`（注意：`/settings/apps` 不存在，
       会重定向到 general-settings；真实入口是侧栏 **Plugins**）。
-   b. **先查重**：插件列表里若已有「Nexus DSH」（描述含“通过 OpenAI 官方隧道动态调用当前 DSH 会…”），
+   b. **先查重**：插件列表里若已有「WebBridge DSH」（描述含“通过 OpenAI 官方隧道动态调用当前 DSH 会…”），
       跳过创建，直接进第 5 步。
    c. 创建入口：列表底部的 **Plugin Creator** 链接 → 详情页的 `create-plugin` 动作按钮
       （按钮文本含 "create-plugin"，这是 Plugin Creator 插件自身的动作，不是普通表单按钮）。
    d. 向导结构（已实测到步骤清单）：Create a plugin → Choose the capabilities
       （Extensions 等）→ Check the components → Development（Plugin name）→ Finish。
-      目标配置：名称 **Nexus DSH**；连接方式 **Tunnel**（选用户的 tunnel）；
+      目标配置：名称 **WebBridge DSH**；连接方式 **Tunnel**（选用户的 tunnel）；
       认证 **无需身份验证**；权限 **允许使用所有工具**。
    e. 向导内部字段未逐项实测：走通时按页面提示逐项用 `explore` / `eval` 现场取证，
       再点击对应控件；不要盲选。
@@ -50,7 +50,7 @@ tags: [chatgpt, connector, tunnel, headless]
 | --- | --- | --- |
 | 设置入口 | `https://chatgpt.com/settings/plugins-settings` | 不要用 /settings/apps（重定向） |
 | 侧栏 Plugins | 可见按钮中 `innerText === "Plugins"` | 已实测 |
-| 插件列表项 | 可见 `a, button` 中文本含 `Nexus DSH` 且长度 <200 | 已实测；同时用于查重 |
+| 插件列表项 | 可见 `a, button` 中文本含 `WebBridge DSH` 且长度 <200 | 已实测；同时用于查重 |
 | Plugin Creator 链接 | 可见链接中 `/Plugin Creator/i` | 已实测 |
 | create-plugin 按钮 | 可见按钮中 `innerText.includes("create-plugin")` 取最后一个 | 已实测 |
 | 创建向导对话框 | `[role="dialog"]`（取最后一个可见的） | 已实测 |
@@ -60,7 +60,7 @@ tags: [chatgpt, connector, tunnel, headless]
 ## 结果读取 / 验证
 
 - `status`：`auth.chatgpt = ready` + `setup.tunnel.status = connected` 为基线；
-- 插件创建成功后：插件列表出现「Nexus DSH」；DSH 模型菜单出现 `WebBridge · ChatGPT`；
+- 插件创建成功后：插件列表出现「WebBridge DSH」；DSH 模型菜单出现 `WebBridge · ChatGPT`；
 - 向 ChatGPT 发一条要求调用工具的消息，观察是否走原生 connector（出现工具执行卡片）。
 
 ## 陷阱
@@ -69,7 +69,7 @@ tags: [chatgpt, connector, tunnel, headless]
 - Plugin Creator 的 create-plugin 是**插件动作按钮**，点击后弹向导而不是普通表单页；
 - 向导步骤名（capabilities/components/development/finish）来自步骤清单渲染，
   内部字段随版本变动，**每次走流程先 `explore` 现场取证再操作**；
-- 账号里已存在 Nexus DSH 时**不要重复创建**——先查重（快速路径 4b）；
+- 账号里已存在 WebBridge DSH 时**不要重复创建**——先查重（快速路径 4b）；
 - 登录/验证码永远由用户在可见窗口完成，AI 不代填；密钥只进 DSH 设置页与本机加密存储。
 
 ## 空页面/异常兜底
@@ -83,7 +83,7 @@ tags: [chatgpt, connector, tunnel, headless]
 
 ## 验证记录
 
-- 2026-11-18 webbridge-cli 实测：Plugins 侧栏入口、插件列表、Nexus DSH 已存在条目、
+- 2026-11-18 webbridge-cli 实测：Plugins 侧栏入口、插件列表、WebBridge DSH 已存在条目、
   Plugin Creator 链接与 create-plugin 动作、创建向导对话框及步骤清单（capabilities →
   components → development → finish）。向导内部字段未逐项实测（用户决定不真实跑通）。
-  本机 Nexus DSH 已配置且隧道 connected。
+  本机 WebBridge DSH 已配置且隧道 connected。

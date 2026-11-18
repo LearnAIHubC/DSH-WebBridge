@@ -44,7 +44,7 @@ function fixture({ initialUrl = 'https://chatgpt.com/c/previous', customNewChatB
       clicked.push(selector)
       if (selector === SITE_PRESETS.chatgpt.adapter.sendSelector) return submitPending()
       if (selector === 'button[data-testid="composer-plus-btn"], form button:has(svg use[href*="plus"])') return
-      if (selector === 'button[data-plugin-impression-id]:has-text("Nexus DSH")') { pluginSelected = true; return }
+      if (selector === 'button[data-plugin-impression-id]:has-text("WebBridge DSH")') { pluginSelected = true; return }
       if (customNewChatButton && selector === 'button[data-new-chat]') return startNewChat()
       throw new Error('sidebar control is hidden')
     },
@@ -72,7 +72,7 @@ function fixture({ initialUrl = 'https://chatgpt.com/c/previous', customNewChatB
   const session = new ChatSession({ settings, driver, log: message => logs.push(message) })
   session.adapter = () => ({
     ...SITE_PRESETS.chatgpt.adapter,
-    pluginName: withPlugin ? 'Nexus DSH' : '',
+    pluginName: withPlugin ? 'WebBridge DSH' : '',
     ...(customNewChatButton ? { newChatSelector: 'button[data-new-chat]' } : {}),
   })
   const provider = new WebChatAdapter({
@@ -447,7 +447,7 @@ test('a missing saved conversation cannot redirect a task into another conversat
   assert.equal(submitted.length, 0)
 })
 
-test('the first web message includes its attachment, user text, and Nexus DSH mention', async () => {
+test('the first web message includes its attachment, user text, and WebBridge DSH mention', async () => {
   const { session, submitted, clicked } = fixture({ withPlugin: true })
   const attachment = { name: 'dsh-context.txt', content: 'SYSTEM_CONTEXT' }
   await session.ask('FIRST_USER_TEXT', { sessionKey: 'plugin-chat', attachment })

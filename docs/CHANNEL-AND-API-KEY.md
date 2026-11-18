@@ -37,7 +37,7 @@ DSH 的「设置 → ChatGPT 网页版」只需要两串值：
 
 ![表单底部：① Create secret key 提交按钮](images/06-create-submit.png)
 
-## 第三步：在 ChatGPT 网页里创建 Nexus DSH 插件
+## 第三步：在 ChatGPT 网页里创建 WebBridge DSH 插件
 
 1. 登录 <https://chatgpt.com>，打开 <https://chatgpt.com/plugins>，点红框 ① 的 **添加**。
 
@@ -47,7 +47,7 @@ DSH 的「设置 → ChatGPT 网页版」只需要两串值：
 
 ![添加菜单：① 添加自定义 MCP 服务器](images/08-add-menu.png)
 
-3. 表单按红框填写：① 名称 `Nexus DSH`；② 连接方式选 **Tunnel**；③ 在 `tunnel_...` 输入框粘贴第一步的 Tunnel ID；④ 认证方式选 **无需身份验证**；⑤ 勾选信任确认框；⑥ 点创建提交，随后在确认弹窗里点 **Nexus DSH** 完成连接。
+3. 表单按红框填写：① 名称 `WebBridge DSH`；② 连接方式选 **Tunnel**；③ 在 `tunnel_...` 输入框粘贴第一步的 Tunnel ID；④ 认证方式选 **无需身份验证**；⑤ 勾选信任确认框；⑥ 点创建提交，随后在确认弹窗里点 **WebBridge DSH** 完成连接。
 
 ![MCP 创建表单：① 名称 ② Tunnel ③ Tunnel ID ④ 无需身份验证 ⑤ 信任 ⑥ 提交](images/09-mcp-form.png)
 

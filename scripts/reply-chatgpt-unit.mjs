@@ -5,7 +5,7 @@ import { waitForReply } from '../src/detect.js'
 import { BrowserDriver } from '../src/driver.js'
 
 const old = { count: 1, text: 'OLD_ANSWER', userTurnKey: 'old-turn', userText: 'OLD_QUESTION', replyTurnKey: 'old-turn', replyId: 'old-reply' }
-const fresh = { count: 2, text: 'NEW_ANSWER', userTurnKey: 'new-turn', userText: '用户：NEW_QUESTION Nexus DSH', replyTurnKey: 'new-turn', replyId: 'new-reply' }
+const fresh = { count: 2, text: 'NEW_ANSWER', userTurnKey: 'new-turn', userText: '用户：NEW_QUESTION WebBridge DSH', replyTurnKey: 'new-turn', replyId: 'new-reply' }
 function wait(sequence, overrides = {}) {
   let index = 0
   return waitForReply({
@@ -120,20 +120,20 @@ test('the captured submitted turn accepts the real reply even when an app mentio
 })
 
 test('a completed short prompt with an inline app mention finishes before its submitted turn key was captured', async () => {
-  const reply = { ...fresh, userText: '检查子智能体以及 mcp Nexus DSH 等', completed: true, generationKnown: true }
+  const reply = { ...fresh, userText: '检查子智能体以及 mcp WebBridge DSH 等', completed: true, generationKnown: true }
   const answer = await wait([reply, reply], {
     baseline: { count: 0, text: '' }, expectedText: '检查子智能体以及mcp等', expectedTurnKey: '',
-    adapter: { matchReplyToUserTurn: true, requireCountGrowth: true, pluginName: 'Nexus DSH' },
+    adapter: { matchReplyToUserTurn: true, requireCountGrowth: true, pluginName: 'WebBridge DSH' },
   })
   assert.equal(answer.text, 'NEW_ANSWER')
   assert.equal(answer.replyTurnKey, 'new-turn')
 })
 
 test('an inline app mention cannot make a different completed prompt belong to the current request', async () => {
-  const reply = { ...fresh, userText: '另一个问题 Nexus DSH', completed: true, generationKnown: true }
+  const reply = { ...fresh, userText: '另一个问题 WebBridge DSH', completed: true, generationKnown: true }
   await assert.rejects(wait([reply], {
     baseline: { count: 0, text: '' }, expectedText: '检查子智能体以及mcp等', expectedTurnKey: '',
-    adapter: { matchReplyToUserTurn: true, requireCountGrowth: true, pluginName: 'Nexus DSH' },
+    adapter: { matchReplyToUserTurn: true, requireCountGrowth: true, pluginName: 'WebBridge DSH' },
     settings: { replyTimeoutMs: 25, pollIntervalMs: 1, stableSamples: 1 },
   }), error => error.code === 'reply-timeout')
 })

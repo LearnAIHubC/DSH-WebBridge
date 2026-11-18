@@ -233,8 +233,8 @@ AI 安装指引（AI agents：为用户安装本插件时，请读并执行以�
    `node scripts/webbridge-cli.mjs tunnel save --file <路径>` 加密保存到本机；
    之后用户只需在 DSH「设置 → WebBridge」点一次「保存并连接」。
    验证 setup.tunnel.status = connected。
-5. 在 ChatGPT 网页创建 Nexus DSH 插件（AI 驱动、无头）：读
-   docs/CHATGPT-PLUGIN-EXPERIENCE.md 经验文件并照做——先查重（已存在 Nexus DSH 则跳过创建），
+5. 在 ChatGPT 网页创建 WebBridge DSH 插件（AI 驱动、无头）：读
+   docs/CHATGPT-PLUGIN-EXPERIENCE.md 经验文件并照做——先查重（已存在 WebBridge DSH 则跳过创建），
    向导字段一律先 explore 取证再点击，不要盲选。
 6. 验证：`node scripts/webbridge-cli.mjs status` 中 setup.tunnel.status = connected 且
    auth.chatgpt = ready；DSH 会话选择 WebBridge · ChatGPT 即可开始使用。

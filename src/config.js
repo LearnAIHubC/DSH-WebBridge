@@ -82,7 +82,7 @@ export const SITE_PRESETS = {
       stripPrompt: false,
       requireCountGrowth: true,
       matchReplyToUserTurn: true,
-      pluginName: 'Nexus DSH',
+      pluginName: 'WebBridge DSH',
       reasoning: {
         selector: 'button[aria-pressed]',
         labels: ['思考', 'Think'],

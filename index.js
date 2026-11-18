@@ -376,7 +376,7 @@ export function apply(ctx, config = {}) {
   log(`[webbridge] activated v${VERSION}: registry=${activation.registry?.count ?? '?'} driver=${driver.available}`)
 
   // --- model provider ------------------------------------------------------
-  // Nexus DSH supplies the full native MCP catalog in ChatGPT. Sending a
+  // The ChatGPT bridge plugin supplies the full native MCP catalog. Sending a
   // second truncated text catalog would hide tools and conflict with it.
   if (settings.providers?.enabled !== false) {
     ctx.inject(['llm'], (scoped) => {

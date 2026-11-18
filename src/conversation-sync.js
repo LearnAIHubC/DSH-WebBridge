@@ -54,13 +54,14 @@ function normalize(text) {
 
 function webUserText(text) {
   let value = String(text || '').trim()
-  if (value.startsWith('调用 Nexus DSH 的 dsh_get_context，参数为 ')) {
+  // Historical turns carry the old plugin name; normalize both spellings.
+  if (/^调用 (?:WebBridge|Nexus) DSH 的 dsh_get_context，参数为 /.test(value)) {
     const boundary = value.indexOf('\n\n')
     value = boundary < 0 ? '' : value.slice(boundary + 2).trim()
   }
   if (/^DSH 上下文已更新。请应用增量规则/.test(value) ||
       /^请处理当前尚未完成的步骤。?$/.test(value)) return ''
-  return value.replace(/^Nexus DSH\s*\n/, '').trim()
+  return value.replace(/^(?:WebBridge|Nexus) DSH\s*\n/, '').trim()
 }
 
 function webId(url, entry, index) {

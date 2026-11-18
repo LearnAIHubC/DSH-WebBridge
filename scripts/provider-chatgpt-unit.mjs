@@ -368,7 +368,7 @@ test('hidden replies and empty placeholders do not count as a new chat reply', (
 test('user messages containing plugin mentions cannot be mistaken for assistant markdown', () => {
   const node = (text, role) => ({ innerText: text, textContent: text, checkVisibility: () => true,
     getAttribute: (name) => name === 'data-markdown-text-style' ? role : null })
-  let nodes = [node('USER_PROMPT Nexus DSH', 'user-message')]
+  let nodes = [node('USER_PROMPT WebBridge DSH', 'user-message')]
   const document = { querySelectorAll: (selector) => selector === '.markdown' ? nodes : [], querySelector: () => null, title: 'ChatGPT' }
   const read = new Function('document', 'location', `return ${buildReadExpression({ messageSelector: '.markdown', matchReplyToUserTurn: true })}`)
   const location = { href: 'https://chatgpt.com/c/test' }

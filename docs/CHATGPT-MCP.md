@@ -20,7 +20,7 @@
 1. <https://chatgpt.com/plugins> → 右上「添加」→ 添加自定义 MCP 服务器
 2. 名称随意；URL 粘 `connector-url.txt` 的内容
 3. 身份验证选 **无需身份验证**（key 在 URL 里），勾选风险确认，创建
-4. 创建后点「连接 Nexus DSH」
+4. 创建后点「连接 WebBridge DSH」
 5. 新对话里点 `+` 选中插件（出现 chip），再写提示词
 
 ## 实测记录

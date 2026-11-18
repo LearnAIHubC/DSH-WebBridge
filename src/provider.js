@@ -35,7 +35,7 @@ function rawMessageText(message) {
 
 function contextNotice(reference, since) {
   const args = { context_id: reference.context_id, ...(since ? { since_context_id: since } : {}) }
-  return `调用 Nexus DSH 的 ${CONTEXT_TOOL_NAME}，参数为 ${JSON.stringify(args)}。` +
+  return `调用 WebBridge DSH 的 ${CONTEXT_TOOL_NAME}，参数为 ${JSON.stringify(args)}。` +
     '读取所有分页，直到 completeness.complete=true，再处理输入框中的任务。项目地址、有效指令和上下文注入都在工具结果中。后续调用 DSH 工具时，如果工具参数里有 dsh_context_id，始终填当前 context_id；这是 MCP 路由字段，DSH 工具本身不会收到它。' +
     (since ? '仅在仍保留此前完整上下文时使用 since_context_id，否则省略它重新读取全量。' : '')
 }
@@ -393,7 +393,7 @@ export class WebChatAdapter {
     const nativeMcp = this.settings.site === 'chatgpt' && typeof this.parseReply !== 'function'
     const nativeContext = isMainChat && nativeMcp && Boolean(this.contextStore)
     if (nativeContext && this.contextAvailable && !this.contextAvailable()) {
-      throw new BridgeError('context-tool-unavailable', 'Nexus DSH 尚未暴露 dsh_get_context。请在现有 MCP 工具范围中启用该工具并刷新连接，再重试。')
+      throw new BridgeError('context-tool-unavailable', '桥接插件尚未暴露 dsh_get_context。请在现有 MCP 工具范围中启用该工具并刷新连接，再重试。')
     }
     const snapshotMessages = nativeContext ? messages : null
     const userMessages = nativeContext
@@ -593,7 +593,7 @@ export class WebChatAdapter {
       if (contextReference) {
         state.contextDelivered = this.contextStore.isDelivered(contextReference.context_id)
         if (!state.contextDelivered) {
-          throw new BridgeError('context-not-initialized', '网页模型未完整读取本轮 DSH 上下文；初始化未完成。请确认 Nexus DSH 已刷新并包含 dsh_get_context 后重试。')
+          throw new BridgeError('context-not-initialized', '网页模型未完整读取本轮 DSH 上下文；初始化未完成。请确认桥接插件已刷新并包含 dsh_get_context 后重试。')
         }
         state.contextReference = contextReference
         state.contextDigest = nextContextDigest
