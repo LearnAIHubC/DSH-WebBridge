@@ -4,7 +4,7 @@
 > 当前 `webbridge-chatgpt` 模型主线使用 ChatGPT 原生 MCP，不经过这套文本协议；实验回环失败时
 > 应直接结束并返回可诊断结果，不能影响 ChatGPT provider 的正常问答。
 >
-> 这套协议是本项目自己的兼容层。Nexus DSH 的正式路径使用标准 MCP 工具 schema 与客户端原生
+> 这套协议是本项目自己的兼容层。ChatGPT 桥接插件的正式路径使用标准 MCP 工具 schema 与客户端原生
 > function calling；两条路径不要混用。
 
 网页版聊天**没有原生 function calling**。所以模式 A+ 的本质是：用一段明确的文本协议，让网页模型"假装"有工具，再由插件解析并执行。
