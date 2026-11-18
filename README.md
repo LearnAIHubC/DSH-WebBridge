@@ -228,12 +228,15 @@ AI 安装指引（AI agents：为用户安装本插件时，请读并执行以�
 3. 登录 ChatGPT：执行 `node scripts/webbridge-cli.mjs open chatgpt --headed`，
    在弹出的可见浏览器中由用户本人完成登录（凭据永远由用户输入，AI 不代填、不读取）；
    之后轮询 `node scripts/webbridge-cli.mjs status`，直到 auth.chatgpt = ready。
-4. 渠道与密钥：引导用户打开
-   https://github.com/LearnAIHubC/DSH-WebBridge/blob/main/docs/CHANNEL-AND-API-KEY.md
-   按文档自行创建 Secure MCP Tunnel 与 Runtime API Key（仅需 Tunnels 的 Read + Use 权限）；
-   然后在 DSH「设置 → WebBridge」的渠道与 API Key 一栏填入 Tunnel ID 与 Runtime API Key，
-   点击「保存并连接」。密钥只进本机加密存储，不要让用户粘贴到对话里。
-5. 验证：`node scripts/webbridge-cli.mjs status` 中 setup.tunnel.status = connected 且
+   此后所有步骤一律无头执行。
+4. 渠道与密钥：用户自助在 OpenAI 控制台创建 Secure MCP Tunnel 与 Runtime API Key
+   （仅需 Tunnels 的 Read + Use 权限），AI 只口头引导；用户在 DSH「设置 → WebBridge」
+   的渠道与 API Key 一栏填入并点「保存并连接」。密钥只进本机加密存储，
+   不要让用户粘贴到对话里。验证 setup.tunnel.status = connected。
+5. 在 ChatGPT 网页创建 Nexus DSH 插件（AI 驱动、无头）：读
+   docs/CHATGPT-PLUGIN-EXPERIENCE.md 经验文件并照做——先查重（已存在 Nexus DSH 则跳过创建），
+   向导字段一律先 explore 取证再点击，不要盲选。
+6. 验证：`node scripts/webbridge-cli.mjs status` 中 setup.tunnel.status = connected 且
    auth.chatgpt = ready；DSH 会话选择 WebBridge · ChatGPT 即可开始使用。
 排错：`node scripts/webbridge-cli.mjs --help`（explore / console / network / ask），
 详见 docs/WEBBRIDGE-CLI.md。
