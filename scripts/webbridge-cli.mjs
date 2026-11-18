@@ -53,6 +53,8 @@ const usage = `用法: webbridge-cli <命令> [参数]
   explore                             页面探索：输入框/发送键/停止键/回复区/登录墙/模型码（每个候选带唯一选择器）
   probe <site>                        站点适配器探测
   annotate <site> start|read [--save] 标注校准（read 可直接保存）
+  tunnel save --id <TunnelID> [--file <两行文件> | --key-file <路径> | --key <值> | stdin]
+                                      加密保存渠道与密钥，之后用户只需点一次「保存并连接」
   ask <site> '<消息>' [--timeout ms]   端到端发送测试（真实发出消息）
 环境: WEBBRIDGE_MCP_URL（默认 http://127.0.0.1:17877）`
 
@@ -67,7 +69,7 @@ for (let index = 1; index < argv.length; index++) {
   if (value.startsWith('--')) {
     const key = value.slice(2)
     const next = argv[index + 1]
-    if (next !== undefined && !next.startsWith('--') && ['n', 'filter', 'type', 'timeout', 'pageId', 'path'].includes(key)) { flags[key] = next; index++ }
+    if (next !== undefined && !next.startsWith('--') && ['n', 'filter', 'type', 'timeout', 'pageId', 'path', 'id', 'file', 'key', 'key-file'].includes(key)) { flags[key] = next; index++ }
     else flags[key] = true
   } else positional.push(value)
 }
@@ -119,6 +121,26 @@ switch (command) {
     const mode = positional[1]
     if (!site || !['start', 'read'].includes(mode)) fail('用法: annotate <site> start|read [--save]')
     console.log(JSON.stringify(await call('webbridge_adapter', { site, annotate: mode, ...(flags.save ? { save: true } : {}) }), null, 2))
+    break
+  }
+  case 'tunnel': {
+    const sub = positional[0]
+    if (sub !== 'save') fail('用法: tunnel save --id <Tunnel ID> [--file <两行文件> | --key-file <路径> | --key <值> | stdin]')
+    let id = flags.id
+    let key = flags.key
+    if (flags.file) {
+      const lines = readFileSync(flags.file, 'utf8').split(/\r?\n/).map(line => line.trim()).filter(Boolean)
+      if (lines.length < 2) fail(`--file 文件需要两行：第一行 Tunnel ID，第二行 Runtime API Key（当前 ${lines.length} 行）`)
+      id = id || lines[0]
+      key = key || lines[1]
+    }
+    if (!key && flags['key-file']) key = readFileSync(flags['key-file'], 'utf8').trim()
+    if (!key && !process.stdin.isTTY) { try { key = readFileSync(0, 'utf8').trim() } catch {} }
+    if (!id) fail('缺少 Tunnel ID：用 --id 提供，或用 --file 两行文件一次给出。')
+    if (flags.key) console.error('提示：--key 会留在 shell 历史里，建议 --file 或 --key-file。')
+    const result = await call('webbridge_tunnel', { action: 'save', tunnelId: id, ...(key ? { runtimeApiKey: key } : {}) })
+    console.log(JSON.stringify(result, null, 2))
+    console.error('已加密保存到本机。现在只需在 DSH「设置 → WebBridge」点一次「保存并连接」。')
     break
   }
   case 'ask': {

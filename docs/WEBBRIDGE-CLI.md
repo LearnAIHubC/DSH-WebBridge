@@ -26,6 +26,7 @@ node scripts/webbridge-cli.mjs <命令> [参数]
 | `explore` | 一条命令的页面体检：输入框、发送键、停止键、回复区、登录墙、模型码，每个候选带唯一选择器 |
 | `probe <site>` | 按现有适配器探测页面（inputFound / assistantNodes） |
 | `annotate <site> start\|read [--save]` | 标注校准：有头窗口框选 → 读出唯一选择器 → 保存 |
+| `tunnel save --id <TunnelID> [--file <两行文件> \| --key-file <路径> \| --key <值> \| stdin]` | 加密保存渠道与 Runtime API Key（不回显、不进对话），之后用户在设置页点一次「保存并连接」 |
 | `ask <site> '<消息>' [--timeout ms]` | 端到端发送测试（**真实发出**，消耗账号额度） |
 
 ## 分工（重要）

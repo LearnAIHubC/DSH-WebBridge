@@ -72,6 +72,15 @@ export class McpBridge {
           headed: { type: 'boolean', description: 'Show the browser window.' },
         },
       },
+      {
+        name: 'webbridge_tunnel',
+        description: 'Save the OpenAI Secure MCP Tunnel credentials locally (encrypted, never returned), or start the connection with the saved values. The user then only needs to click 保存并连接 once.',
+        parameters: {
+          action: { type: 'string', required: true, description: 'One of: save, connect.' },
+          tunnelId: { type: 'string', required: true, description: 'The Secure MCP Tunnel ID (tunnel_…).' },
+          runtimeApiKey: { type: 'string', description: 'The Runtime API Key for this tunnel. Omit to keep the already-saved key.' },
+        },
+      },
     ]
 
     if (settings.mcp?.exposeAgent) {

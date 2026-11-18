@@ -230,9 +230,11 @@ AI 安装指引（AI agents：为用户安装本插件时，请读并执行以�
    之后轮询 `node scripts/webbridge-cli.mjs status`，直到 auth.chatgpt = ready。
    此后所有步骤一律无头执行。
 4. 渠道与密钥：用户自助在 OpenAI 控制台创建 Secure MCP Tunnel 与 Runtime API Key
-   （仅需 Tunnels 的 Read + Use 权限），AI 只口头引导；用户在 DSH「设置 → WebBridge」
-   的渠道与 API Key 一栏填入并点「保存并连接」。密钥只进本机加密存储，
-   不要让用户粘贴到对话里。验证 setup.tunnel.status = connected。
+   （仅需 Tunnels 的 Read + Use 权限），把两行值（第一行 Tunnel ID、第二行 Runtime API Key）
+   存进一个本地文件并告诉 AI 路径——不要粘贴到对话里。AI 执行
+   `node scripts/webbridge-cli.mjs tunnel save --file <路径>` 加密保存到本机；
+   之后用户只需在 DSH「设置 → WebBridge」点一次「保存并连接」。
+   验证 setup.tunnel.status = connected。
 5. 在 ChatGPT 网页创建 Nexus DSH 插件（AI 驱动、无头）：读
    docs/CHATGPT-PLUGIN-EXPERIENCE.md 经验文件并照做——先查重（已存在 Nexus DSH 则跳过创建），
    向导字段一律先 explore 取证再点击，不要盲选。

@@ -4,6 +4,7 @@ import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { McpBridge } from '../src/mcp.js'
+import { createOps } from '../src/ops.js'
 import { createToolScope } from '../src/dsh.js'
 import { dslToJsonSchema } from '../src/tool.js'
 
@@ -163,4 +164,22 @@ test('explicit exclusions still apply to an otherwise complete MCP catalog', asy
   assert.ok(names.includes('write'))
   assert.ok(!names.includes('pwsh'))
   assert.equal((await rpc('tools/call', { name: 'pwsh', arguments: {} })).result.isError, true)
+})
+
+test('the tunnel op validates input and routes through the bound setup instance', async () => {
+  const ops = createOps({ settings: {}, driver: {}, session: {} })
+  await assert.rejects(ops.tunnel({ action: 'nope', tunnelId: 'tunnel_x' }), /save 或 connect/)
+  await assert.rejects(ops.tunnel({ action: 'save' }), /tunnelId/)
+  await assert.rejects(ops.tunnel({ action: 'save', tunnelId: 'tunnel_x' }), /尚未就绪/)
+  const received = []
+  ops.bindSetup({ execute: command => { received.push(command); return { job: { busy: false }, tunnel: { status: 'configured' } } } })
+  const state = await ops.tunnel({ action: 'save', tunnelId: ' tunnel_abc123 ', runtimeApiKey: 'sk-test' })
+  assert.equal(received.length, 1)
+  assert.equal(received[0].action, 'save')
+  assert.equal(received[0].tunnelId, 'tunnel_abc123')
+  assert.equal(received[0].runtimeApiKey, 'sk-test')
+  assert.equal(state.tunnel.status, 'configured')
+  // Omitting the key keeps the saved one: the command carries no runtimeApiKey.
+  await ops.tunnel({ action: 'save', tunnelId: 'tunnel_abc123' })
+  assert.equal('runtimeApiKey' in received[1], false)
 })

@@ -171,6 +171,9 @@ export function apply(ctx, config = {}) {
       for (const item of adapters) item.sessionState.clear()
     },
   })
+  // Late-bind so the MCP webbridge_tunnel tool can prefill credentials through
+  // the same encrypted path the settings page uses.
+  ops.bindSetup?.(setup)
   // Login status drives the model menu: when a site flips to ready (or back),
   // re-ask the registry for that route's catalog so only signed-in web AIs show.
   setup.browser.onAuthChanged = site => {

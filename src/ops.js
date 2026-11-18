@@ -11,9 +11,25 @@ import { ChatSession } from './session.js'
  * capability drift and then disagree about policy.
  */
 export function createOps({ settings, driver, session, log }) {
+  let setupInstance = null
   const scoped = timeoutMs => timeoutMs === undefined || timeoutMs === null ? settings : { ...settings, replyTimeoutMs: Math.max(0, Number(timeoutMs) || 0) }
 
   return {
+    /** Late-bound by index.js once WebBridgeSetup exists; the MCP
+     *  webbridge_tunnel tool routes here so an AI can prefill credentials the
+     *  same encrypted way the settings page does. Keys never travel back. */
+    bindSetup(instance) { setupInstance = instance },
+    async tunnel(args, signal) {
+      const action = String(args.action || '')
+      if (!['save', 'connect'].includes(action)) throw new BridgeError('bad-request', 'action 必须是 save 或 connect。')
+      const command = { action }
+      if (typeof args.tunnelId === 'string' && args.tunnelId.trim()) command.tunnelId = args.tunnelId.trim().slice(0, 200)
+      else throw new BridgeError('bad-request', '缺少 tunnelId（渠道 Tunnel ID）。')
+      if (typeof args.runtimeApiKey === 'string' && args.runtimeApiKey.trim()) command.runtimeApiKey = args.runtimeApiKey.trim().slice(0, 512)
+      if (!setupInstance) throw new BridgeError('setup-unavailable', '设置服务尚未就绪，无法保存渠道配置。')
+      return setupInstance.execute(command)
+    },
+
     async debugMode(args) {
       if (typeof args.enabled !== 'boolean') throw new BridgeError('bad-request', 'enabled 必须是布尔值。')
       return driver.setDebugMode(args.enabled)

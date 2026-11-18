@@ -20,9 +20,11 @@ tags: [chatgpt, connector, tunnel, headless]
 1. 登录（唯一需要人的步骤）：`open chatgpt --headed` → 用户本人登录 →
    轮询 `status` 直到 `auth.chatgpt = ready`。之后所有步骤**无头**执行
    （`webbridge_debug_mode` false / 默认）。
-2. 用户自助项（AI 不代办）：OpenAI 控制台创建 Secure MCP Tunnel + Runtime API Key
-   （仅需 Tunnels 的 Read + Use 权限）。AI 负责口头引导，密钥只在 DSH 设置页填写
-   （「渠道与 API Key」→ 保存并连接），不进对话。
+2. 用户自助项：OpenAI 控制台创建 Secure MCP Tunnel + Runtime API Key（仅需 Tunnels 的
+   Read + Use 权限）。用户把两行值（第一行 Tunnel ID、第二行 Runtime API Key）存进本地文件，
+   把路径告诉 AI（不粘贴到对话）。AI 执行 `webbridge-cli tunnel save --file <路径>`
+   加密保存到本机；用户只需在 DSH「设置 → WebBridge」点一次「保存并连接」。
+   验证 `status` 里 `setup.tunnel.status = connected`。
 3. 隧道连通验证：`status` 里 `setup.tunnel.status = connected`。
 4. **创建 Nexus DSH 插件（AI 驱动，无头）**：
    a. `open https://chatgpt.com/settings/plugins-settings`（注意：`/settings/apps` 不存在，
