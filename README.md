@@ -96,18 +96,16 @@ WebBridge 默认使用无头模式。
 - 可以查看控制台、网络和页面诊断；
 - 不会修改 WebBridge 的 UA、指纹或 Chrome Profile 配置。
 
-## 智谱 / Z.ai 站点
+## 站点选择器校准（标注）
 
-`bigmodel`（智谱体验中心 GLM-5.3）、`chatglm`（智谱清言）、`zai`（Z.ai）已内置为站点预设，默认选择器移植自 WebAgent 1.3.2/1.3.3。用法和 ChatGPT 一致：`webbridge_open site=bigmodel`（首次用有头模式登录一次），之后无头运行 `webbridge_ask` / `webbridge_agent`。
-
-页面改版导致选择器失效时，用标注校准，不用改代码：
+页面改版导致输入框 / 发送键 / 回复区识别失效时，用标注校准，不用改代码：
 
 1. 有头打开该站点（已登录状态）；
 2. `webbridge_adapter site=<site> annotate=start`，页面右下角出现「标注」按钮；
 3. 点按钮后依次框选：输入框、发送键、回复区、停止键（最后一个可不画），画错点框右上角 ×；
 4. `webbridge_adapter site=<site> annotate=read save=true`，框内元素会被解析成唯一 CSS 选择器并保存到 `~/.dsh/webbridge/adapters/<site>.json`，立即生效。
 
-标注的网格投票与唯一选择器逻辑借自 browser-operator 的同名功能，不需要在 Chrome 里安装任何扩展。
+标注的网格投票与唯一选择器逻辑借自 browser-operator 的同名功能，不需要在 Chrome 里安装任何扩展。当前默认只暴露 ChatGPT（`sites.visible` 配置）。
 
 ## 发布包
 

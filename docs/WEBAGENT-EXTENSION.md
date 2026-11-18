@@ -1,13 +1,13 @@
 # WebAgent 扩展（third_party/webagent）—— 可选组件
 
-> **现在这是可选路线。** 品牌版 Google Chrome 136+ 无法自动加载未打包扩展（本机 157 实测：`--load-extension` 被忽略、预写 Preferences 无效），所以插件内置的智谱/Z.ai 适配 + `webbridge_adapter annotate` 标注校准是零安装的默认路线，见 README「智谱 / Z.ai 站点」。本文件夹保留给两类场景：把 `browserExecutablePath` 指到 Edge/Chromium（它们仍认 `--load-extension`，驱动会自动带上本扩展，零手动）；或在 Chrome 里手动装一次（下方步骤），装进持久 Profile 后每次无头启动同样自动生效。
+> **现在这是可选路线。** 品牌版 Google Chrome 136+ 无法自动加载未打包扩展（本机 157 实测：`--load-extension` 被忽略、预写 Preferences 无效），插件内置的站点适配 + `webbridge_adapter annotate` 标注校准是零安装的默认路线。本文件夹保留给两类场景：把 `browserExecutablePath` 指到 Edge/Chromium（它们仍认 `--load-extension`，驱动会自动带上本扩展，零手动）；或在 Chrome 里手动装一次（下方步骤），装进持久 Profile 后每次无头启动同样自动生效。
 
-这个文件夹是从 [webagent](https://github.com/ysunyang4/webagent) 1.3.2（commit 6324b71，最后一个带智谱 bigmodel.cn / 智谱清言 chatglm.cn 适配的公开版本）整体打包进来的浏览器扩展，GPL-3.0-only，LICENSE 保留在文件夹里。它让网页模型（智谱体验中心 / 清言 / Z.ai 等）把 ```nexus 代码块里的工具调用转交给本机 MCP——也就是本插件的 MCP 端点。
+这个文件夹是从 [webagent](https://github.com/ysunyang4/webagent) 1.3.2（commit 6324b71）整体打包进来的浏览器扩展，GPL-3.0-only，LICENSE 保留在文件夹里。它让扩展支持的网页模型把 ```nexus 代码块里的工具调用转交给本机 MCP——也就是本插件的 MCP 端点。支持的站点清单见上游 `manifest.json`。
 
 相对上游的改动只有三处：
 
 - `mcp-client.js` / `popup.js`：本地端口白名单加了 **17877**（本插件 MCP 的默认端口）。
-- `content.js` / `manifest.json`：把 1.3.3 的 Z.ai（zchat.z.ai / chat.z.ai）适配移植进来。
+- `content.js` / `manifest.json`：补齐上游 1.3.3 新增站点的适配。
 - `manifest.json`：删掉了 chatgpt.com / openai.com 的匹配，保证它不会出现在你现有的 ChatGPT 网页流程里。
 
 ## 为什么需要手动装一次
@@ -18,7 +18,7 @@ Google Chrome 136 起不再认 `--load-extension`（本机 157 实测确认：�
 
 ## 首次安装步骤
 
-1. 开有头模式：DSH「设置 → ChatGPT 网页版 → 浏览器调试」打开，然后随便触发一次浏览器操作（例如 `webbridge_open`），让 Chrome 窗口弹出来。
+1. 开有头模式：DSH「设置 → WebBridge → 浏览器调试」打开，然后随便触发一次浏览器操作（例如 `webbridge_open`），让 Chrome 窗口弹出来。
 2. 在弹出的 Chrome 窗口新开标签页，进入 `chrome://extensions`，打开右上角「开发者模式」。
 3. 点「加载已解压的扩展程序」，选择目录 `~/.dsh/webbridge/webagent-extension`。
 4. 点工具栏里的扩展图标打开弹窗：MCP 服务基址填 `http://127.0.0.1:17877`；Bridge Token 填 `~/.dsh/webbridge/mcp-token.key` 文件里的内容（先用 `webbridge_mcp` 的 status 确认端点在跑）；点「保存配置」，再点「检测 MCP 握手」，应显示 🟢 已连接和工具数量。
@@ -26,7 +26,7 @@ Google Chrome 136 起不再认 `--load-extension`（本机 157 实测确认：�
 
 ## 验证
 
-`webbridge_open` 打开 `https://bigmodel.cn/trialcenter/modeltrial/text?modelCode=glm-5.3`，页面右下角出现 WebAgent 浮动面板即说明内容脚本已在插件的浏览器里运行；也可以用 `webbridge_browser` 的 eval 检查 `document.getElementById('nexus-agent-root')`。
+`webbridge_open` 打开扩展支持的任一站点，页面右下角出现 WebAgent 浮动面板即说明内容脚本已在插件的浏览器里运行；也可以用 `webbridge_browser` 的 eval 检查 `document.getElementById('nexus-agent-root')`。
 
 ## 它是怎么做 tools/call 的
 
@@ -34,6 +34,6 @@ Google Chrome 136 起不再认 `--load-extension`（本机 157 实测确认：�
 
 ## 注意
 
-- z.ai（zchat.z.ai / chat.z.ai）需要网络能访问 z.ai；Z.ai 适配移植自 1.3.3，本机未实测（bigmodel.cn 已实测注入与握手）。智谱两站需要你先在有头窗口里登录一次。
-- 扩展也会在 DeepSeek、Gemini、Kimi 等它本就支持的站点激活，行为与上游一致。
-- 上游 1.3.3 已把智谱适配从公开代码移除，这份副本是 1.3.2 基础上的自维护版本；上游以后改版不会自动同步。
+- 部分海外站点需要网络可达；各站点首次使用需在有头窗口登录一次。
+- 扩展在它本就支持的站点激活，行为与上游一致；不会触碰 ChatGPT 流程。
+- 上游版本间对部分站点适配有增删，这份副本是自维护版本；上游以后改版不会自动同步。

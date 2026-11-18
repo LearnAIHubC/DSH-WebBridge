@@ -38,13 +38,13 @@ CLI 只负责**探索与执行**：`explore` 报告"哪个元素是哪个元素"
 
 ## 典型工作流
 
-**排错"某站点发不出去"**（bigmodel 的实际案例，三步）：
+**排错"某站点发不出去"**（通用三步）：
 
 ```bash
-node scripts/webbridge-cli.mjs open bigmodel
+node scripts/webbridge-cli.mjs open <site>
 node scripts/webbridge-cli.mjs explore          # 读证据：哪个是真实发送键
 # → AI 判断后通过 webbridge_adapter save 保存选择器
-node scripts/webbridge-cli.mjs ask bigmodel "连通性测试：请回复收到"   # 端到端验证
+node scripts/webbridge-cli.mjs ask <site> "连通性测试：请回复收到"   # 端到端验证
 node scripts/webbridge-cli.mjs console --errors  # 还不行看控制台/网络
 ```
 
