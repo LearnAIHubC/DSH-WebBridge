@@ -5,6 +5,7 @@ import { join } from 'node:path'
 import { BridgeError } from './envelope.js'
 import { dslToJsonSchema } from './tool.js'
 import { CONTEXT_TOOL_NAME, CONTEXT_INSTRUCTIONS } from './context.js'
+import { createActivity, payloadShape } from './activity.js'
 
 const LEGACY_PROTOCOL_VERSION = '2025-06-18'
 const MODERN_PROTOCOL_VERSION = '2026-07-28'
@@ -31,6 +32,7 @@ export class McpBridge {
     this.log = log || (() => {})
     this.toolScope = toolScope ?? null
     this.contextStore = contextStore ?? null
+    this.activity = createActivity(settings, this.log)
     this.server = null
     this.sessions = new Map()
     this.token = ''
@@ -124,6 +126,7 @@ export class McpBridge {
     })
     this.port = this.server.address().port
     this.log(`[webbridge] MCP listening on ${this.loopbackUrl}`)
+    this.activity.emit('mcp.listening', 'MCP 服务已开始监听本机请求', { port: this.port })
     return this.status()
   }
 
@@ -131,6 +134,7 @@ export class McpBridge {
     if (!this.server) return { running: false }
     await new Promise((resolve) => this.server.close(resolve))
     this.server = null
+    this.activity.emit('mcp.stopped', 'MCP 服务已停止监听')
     return { running: false }
   }
 
@@ -635,6 +639,26 @@ export class McpBridge {
     }
     let routedSessionId = this.#boundDshSession(mcpSessionId)
     const started = Date.now()
+    const callId = crypto.randomUUID()
+    let activity
+    const finish = result => {
+      const content = result.content || []
+      let textShape
+      let contextPage
+      try {
+        const value = JSON.parse(content.find(item => item.type === 'text')?.text)
+        textShape = payloadShape(value)
+        if (name === CONTEXT_TOOL_NAME && !result.isError) contextPage = {
+          pageIndex: value.page_index, pageCount: value.page_count, complete: value.completeness?.complete,
+        }
+      } catch {}
+      activity.emit('mcp.output', result.isError ? 'MCP 已返回工具失败结果' : 'MCP 已返回工具执行结果', {
+        callId, tool: name, isError: Boolean(result.isError), durationMs: Date.now() - started,
+        contentTypes: content.map(item => item.type), outputChars: content.reduce((count, item) => count + (item.text?.length || 0), 0),
+        textShape, contextPage,
+      })
+      return result
+    }
     try {
       if (name === CONTEXT_TOOL_NAME && typeof args.context_id === 'string') {
         routeContextId = args.context_id
@@ -642,6 +666,9 @@ export class McpBridge {
       } else if (routeContextId) {
         routedSessionId = this.#bindContextSession(mcpSessionId, routeContextId)
       }
+      activity = this.toolScope?.activityFor?.(routedSessionId || this.toolScope?.activeSessionId)
+        || createActivity(this.settings, this.log, { sessionId: routedSessionId || '', site: this.settings.site })
+      activity.emit('mcp.received', 'MCP 收到工具调用', { callId, tool: name, argumentsShape: payloadShape(args) })
       const readOnlyDebug = name === 'webbridge_browser' && ['console', 'network', 'debug', 'pages'].includes(args.action)
       if (!readOnlyDebug && (this.toolScope?.hasActiveRequests || this.toolScope?.activeSessionId) && ['webbridge_agent', 'webbridge_ask', 'webbridge_send', 'webbridge_open', 'webbridge_new_chat', 'webbridge_browser', 'webbridge_debug_mode'].includes(name)) {
         throw new BridgeError('browser-busy', 'This browser is already serving a DSH conversation. Use the exposed DSH tools directly for local operations.')
@@ -653,14 +680,14 @@ export class McpBridge {
           }
           const data = await this.ops.runAgentTask(args)
           this.#logCall(name, started, true)
-          return { content: [{ type: 'text', text: JSON.stringify(data, null, 2) }] }
+          return finish({ content: [{ type: 'text', text: JSON.stringify(data, null, 2) }] })
         }
         const op = name.slice('webbridge_'.length)
         const fn = this.ops[op]
         if (typeof fn === 'function') {
           const data = await fn(args, undefined)
           this.#logCall(name, started, true)
-          return { content: [{ type: 'text', text: JSON.stringify(data, null, 2) }] }
+          return finish({ content: [{ type: 'text', text: JSON.stringify(data, null, 2) }] })
         }
       }
 
@@ -696,18 +723,21 @@ export class McpBridge {
           throw new BridgeError('context-required', `Read every page of ${CONTEXT_TOOL_NAME} with context_id=${JSON.stringify(reference.context_id)} before using DSH tools. Project paths and effective instructions are in that result.`)
         }
       }
+      activity.emit('mcp.executing', '工具调用已交给 DSH，正在等待执行结果', { callId, tool: name })
       const outcome = await this.toolScope.execute(name, args, undefined, routedSessionId ? { sessionId: routedSessionId } : undefined)
       this.#logCall(name, started, outcome.ok)
       if (!outcome.ok) {
-        return { content: [{ type: 'text', text: outcome.body || 'tool failed' }], isError: true }
+        return finish({ content: [{ type: 'text', text: outcome.body || 'tool failed' }], isError: true })
       }
-      return { content: [{ type: 'text', text: outcome.body }] }
+      return finish({ content: [{ type: 'text', text: outcome.body }] })
     } catch (err) {
+      activity ||= createActivity(this.settings, this.log, { sessionId: routedSessionId || '', site: this.settings.site })
+      activity.emit('mcp.failed', 'MCP 工具调用失败', { callId, tool: name, code: err.code || err.name, durationMs: Date.now() - started })
       this.#logCall(name, started, false, `${err.code || 'error'}: ${err.message}`)
-      return {
+      return finish({
         content: [{ type: 'text', text: `${err.code || 'error'}: ${err.message || String(err)}` }],
         isError: true,
-      }
+      })
     }
   }
 

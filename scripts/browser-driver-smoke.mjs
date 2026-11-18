@@ -54,6 +54,16 @@ try {
     await driver.eval('document.querySelector("button").click()')
     assert.equal((await driver.eval('window.__webbridgeGenerationWatch.stopped')).result, false)
     await driver.endGenerationWatch('synthetic-stop')
+    await pageA.setContent(`<style>body{margin:0} main{height:100vh;overflow:auto} .space{height:3000px}</style>
+      <main><div class="space">Earlier conversation</div><div data-content-search-unit-key="bottom-turn:0:assistant">LATEST_REPLY</div></main>`)
+    await driver.scrollToBottom()
+    await pageA.waitForFunction(() => { const main = document.querySelector('main'); return main.scrollTop + main.clientHeight >= main.scrollHeight - 2 })
+    assert.equal((await driver.reconnectReply({ turnKey: 'bottom-turn', url: pageA.url() })).found, true)
+    assert.equal(pageB.url(), urls[1], 'reply recovery must stay in its own conversation page')
+    await pageA.setContent('<main>Only an old turn is currently rendered</main>')
+    const recoveryUrl = 'data:text/html,' + encodeURIComponent('<main><div data-content-search-unit-key="restored-turn:0:assistant">RESTORED_REPLY</div></main>')
+    const restoredReply = await driver.reconnectReply({ turnKey: 'restored-turn', url: recoveryUrl })
+    assert.deepEqual(restoredReply, { found: true, reloaded: true })
     await pageA.setContent(`<script>window.fills = 0; window.sends = 0</script>
       <div class="ProseMirror" contenteditable="true" oninput="if(this.textContent.trim() && ++window.fills === 2) document.querySelector('button').disabled = false"></div>
       <button aria-label="Send" disabled onclick="window.sends++; const input = document.querySelector('.ProseMirror'); const row = document.createElement('div'); row.setAttribute('data-content-search-unit-key', 'retry-turn:0:user'); row.textContent = input.textContent; document.body.appendChild(row); input.textContent = ''; this.disabled = true">Send</button>`)

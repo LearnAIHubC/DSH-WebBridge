@@ -21,14 +21,17 @@ export function diagnosticText(value) {
 }
 
 export class BrowserDiagnostics {
-  constructor() {
+  constructor(onRecord = () => {}) {
     this.records = { console: [], network: [], dialogs: [] }
     this.watched = new WeakSet()
     this.starts = new WeakMap()
+    this.onRecord = onRecord
   }
   push(kind, entry) {
     const records = this.records[kind]
-    records.push({ ts: Date.now(), ...entry })
+    const record = { ts: Date.now(), ...entry }
+    records.push(record)
+    try { this.onRecord(kind, record) } catch {}
     const maximum = kind === 'console' ? 300 : kind === 'network' ? 500 : 100
     if (records.length > maximum) records.splice(0, records.length - maximum)
   }

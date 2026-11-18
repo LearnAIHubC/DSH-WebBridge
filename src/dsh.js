@@ -69,6 +69,7 @@ export function createToolScope(ctx, log = () => {}, { contextStore } = {}) {
   const requests = new Map()
   const requestSignals = new Map()
   const requestContexts = new Map()
+  const requestActivities = new Map()
   const inputWatchers = new Map()
   const steps = new Map()
   let lastSessionId = null
@@ -344,6 +345,10 @@ export function createToolScope(ctx, log = () => {}, { contextStore } = {}) {
     contextReferenceFor(sessionId) {
       return contextReferenceFor(sessionId)
     },
+    activityFor(sessionId) {
+      const matches = [...requests].filter(([, id]) => String(id) === String(sessionId))
+      return matches.length === 1 ? requestActivities.get(matches[0][0]) : undefined
+    },
     get hasActiveRequests() { return requests.size > 0 },
     isSessionActive(sessionId) {
       return [...requests.values()].some(id => String(id) === String(sessionId))
@@ -393,7 +398,7 @@ export function createToolScope(ctx, log = () => {}, { contextStore } = {}) {
     },
 
     /** Carry the DSH conversation identity across an incoming MCP HTTP call. */
-    async withSession(sessionId, operation, signal, { contextReference } = {}) {
+    async withSession(sessionId, operation, signal, { contextReference, activity } = {}) {
       const request = Symbol('webbridge-request')
       if (contextReference) {
         if (!contextStore) throw new BridgeError('context-unavailable', 'DSH context snapshots are not available.')
@@ -401,6 +406,7 @@ export function createToolScope(ctx, log = () => {}, { contextStore } = {}) {
         requestContexts.set(request, verified)
       }
       requests.set(request, sessionId)
+      if (activity) requestActivities.set(request, activity)
       if (signal) requestSignals.set(request, signal)
       lastSessionId = sessionId
       try {
@@ -409,6 +415,7 @@ export function createToolScope(ctx, log = () => {}, { contextStore } = {}) {
         requests.delete(request)
         requestSignals.delete(request)
         requestContexts.delete(request)
+        requestActivities.delete(request)
       }
     },
 

@@ -61,7 +61,7 @@ export async function readReplyState(driver, adapter, signal) {
  * Zero (the default) waits until completion or cancellation. An explicitly
  * configured positive budget may return captured text with truncated:true.
  */
-export async function waitForReply({ driver, adapter, baseline, settings, signal, log, expectedText, expectedTurnKey, onProgress }) {
+export async function waitForReply({ driver, adapter, baseline, settings, signal, log, expectedText, expectedTurnKey, onProgress, onReconnect, activity }) {
   const started = Date.now()
   const timeoutMs = Number(settings.replyTimeoutMs) || 0
   const deadline = timeoutMs > 0 ? started + timeoutMs : Infinity
@@ -86,6 +86,16 @@ export async function waitForReply({ driver, adapter, baseline, settings, signal
   const pluginName = normalize(adapter.pluginName)
   const withoutPlugin = text => text.split(pluginName).join('').replace(/\s+/g, '')
   const assertReplyPage = driver.replyPageGuard?.()
+  let lastWaitState = ''
+  let lastReadError = ''
+  let lostSince = null
+  let reconnectAttempted = false
+  let reconnectPending = false
+  let reconnectUntil = 0
+  const failLostReply = () => {
+    activity?.emit('reply.reconnect-failed', '仍未找回本轮回复，结束等待；已完成的工具操作不会重做', { targetTurnKey })
+    throw new BridgeError('reply-turn-lost', '网页已切回旧轮次，无法找回本轮回复，已结束等待。已完成的工具操作不会重复执行，请检查已生成的文件后重试。')
+  }
 
   while (Date.now() < deadline) {
     if (signal?.aborted) throw new BridgeError('aborted', 'Reply wait was aborted')
@@ -94,9 +104,14 @@ export async function waitForReply({ driver, adapter, baseline, settings, signal
     try {
       assertReplyPage?.()
       state = await readReplyState(driver, adapter, signal)
+      if (lastReadError) activity?.emit('reply.read-recovered', '已重新读取到回复区元素')
+      lastReadError = ''
       lastError = null
     } catch (err) {
       lastError = err
+      const code = err.code || err.name
+      if (lastReadError !== code) activity?.emit('reply.read-failed', '读取回复区元素失败', { code })
+      lastReadError = code
       if (['aborted', 'browser-closed', 'manual-auth-required', 'driver-missing', 'account-restricted'].includes(err?.code) || String(err?.code || '').startsWith('auth-required')) throw err
       await sleep(pollMs, signal)
       continue
@@ -123,13 +138,57 @@ export async function waitForReply({ driver, adapter, baseline, settings, signal
     const newAssistant = Boolean(state.replyTurnKey && !state.replyTurnKey.startsWith('fallback-') &&
       state.replyTurnKey !== baseline?.replyTurnKey && state.replyTurnKey !== baseline?.userTurnKey &&
       (state.replyId ? state.replyId !== baseline?.replyId : changed || grown))
-    if (state.requestActive && newAssistant && (promptMatches || !state.userTurnKey || state.userTurnKey.startsWith('fallback-'))) targetTurnKey = state.replyTurnKey
+    if (state.requestActive && newAssistant && (!state.userTurnKey || state.userTurnKey.startsWith('fallback-'))) targetTurnKey = state.replyTurnKey
     const currentUserKey = targetTurnKey && state.replyTurnKey === targetTurnKey ? targetTurnKey : state.userTurnKey
     const newUserTurn = Boolean(currentUserKey && currentUserKey !== baseline?.userTurnKey)
     const targetMatches = targetTurnKey ? currentUserKey === targetTurnKey : promptMatches
     const reachedNow = adapter.matchReplyToUserTurn
       ? Boolean(newUserTurn && state.replyTurnKey === currentUserKey && targetMatches)
       : adapter.requireCountGrowth ? grown : grown || changed
+    if (reconnectPending) {
+      if (reachedNow || state.streaming && state.userTurnKey === targetTurnKey && promptMatches) {
+        reconnectPending = false
+        activity?.emit('reply.reconnected', '已找回本轮回复元素，继续监听和回传', { targetTurnKey })
+      } else if (Date.now() >= reconnectUntil) failLostReply()
+    }
+    const lostTurn = adapter.matchReplyToUserTurn && targetTurnKey && !reachedNow &&
+      !state.streaming && state.completed && state.userTurnKey &&
+      state.userTurnKey !== targetTurnKey && !promptMatches
+    if (lostTurn) {
+      lostSince ??= Date.now()
+      if (Date.now() - lostSince >= 5000) {
+        if (reconnectAttempted || !onReconnect) failLostReply()
+        reconnectAttempted = true
+        reconnectPending = true
+        activity?.emit('reply.reconnecting', '网页持续显示旧轮次，正在回到对话底部并重新桥接本轮回复', { targetTurnKey })
+        try { await onReconnect({ turnKey: targetTurnKey }) }
+        catch (error) {
+          activity?.emit('reply.reconnect-failed', '重新桥接本轮回复失败', { code: error.code || error.name })
+          throw error
+        }
+        if (signal?.aborted) throw new BridgeError('aborted', '回复恢复已取消。')
+        lostSince = Date.now()
+        reconnectUntil = Date.now() + 5000
+        stable = 0
+        continue
+      }
+    } else lostSince = null
+    const waitState = !reachedNow ? 'waiting-turn' : state.streaming ? 'streaming' : text ? 'settling' : 'waiting-text'
+    if (waitState !== lastWaitState) {
+      lastWaitState = waitState
+      const messages = {
+        'waiting-turn': '仍在监听本轮回复元素，当前可见回复尚未匹配本轮消息',
+        streaming: '监听到本轮回复元素，网页正在生成回复',
+        settling: '监听到本轮回复内容，正在确认网页生成已完成且内容稳定',
+        'waiting-text': '已匹配本轮回复元素，正在等待正文',
+      }
+      activity?.emit(`reply.${waitState}`, messages[waitState], {
+        selector: adapter.messageSelector, chars: text.length, count: state.count,
+        streaming: state.streaming, completed: state.completed, requestActive: state.requestActive,
+        promptMatches, targetMatches, reachedNow, targetTurnKey,
+        userTurnKey: state.userTurnKey, replyTurnKey: state.replyTurnKey, replyId: state.replyId,
+      })
+    }
     if (settings.stateDir) {
       try { writeFileSync(join(settings.stateDir, 'reply-state.json'), JSON.stringify({ at: Date.now(), streaming: state.streaming, completed: state.completed, requestActive: state.requestActive, replyId: state.replyId, chars: text.length, count: state.count, userKey: state.userTurnKey, replyKey: state.replyTurnKey, targetTurnKey, expectedTurnKey, baselineUserKey: baseline?.userTurnKey || '', promptMatches, targetMatches, reachedNow, newUserTurn, currentUserKey })) } catch {}
     }
@@ -172,6 +231,7 @@ export async function waitForReply({ driver, adapter, baseline, settings, signal
 
     const finished = !adapter.matchReplyToUserTurn || !state.generationKnown || state.completed || (sawStreaming && !state.streaming)
     if (reached && stable >= stableSamples && lastText && finished) {
+      activity?.emit('reply.completed', '已确认本轮回复生成完成', { chars: lastText.length, stableSamples: stable, sawStreaming })
       return {
         text: acceptedState?.formattedText || lastText,
         count: lastCount,
@@ -189,6 +249,7 @@ export async function waitForReply({ driver, adapter, baseline, settings, signal
 
   if (lastError && !lastText) throw lastError
   if (!reached || !lastText) {
+    activity?.emit('reply.timeout', '等待本轮回复超时，未取得可用回复', { timeoutMs, count: lastCount, baselineCount })
     throw new BridgeError(
       'reply-timeout',
       `No new assistant reply appeared within ${settings.replyTimeoutMs}ms. Check the adapter selectors and whether the message was actually sent.`,
@@ -196,6 +257,7 @@ export async function waitForReply({ driver, adapter, baseline, settings, signal
     )
   }
   log?.(`[webbridge] reply timed out with ${lastText.length} chars captured`)
+  activity?.emit('reply.partial', '等待超时，返回已取得的部分回复', { chars: lastText.length, timeoutMs })
   return {
     text: lastText,
     count: lastCount,

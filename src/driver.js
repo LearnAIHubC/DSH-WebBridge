@@ -54,7 +54,18 @@ export class BrowserDriver {
     this.modeChangePending = false
     this.modeChangePromise = null
     this.generations = new Map()
-    this.diagnostics = new BrowserDiagnostics()
+    this.activities = new Map()
+    this.diagnostics = new BrowserDiagnostics((kind, entry) => {
+      if (kind !== 'network' || !['fetch', 'xhr'].includes(entry.resourceType)) return
+      const conversation = /\/backend-api\/(?:f\/)?conversation(?:\/|\?|$)/.test(entry.url)
+      if (!conversation) return
+      const key = [...this.sessionPages].find(([, pageId]) => pageId === entry.pageId)?.[0]
+      this.activities.get(key)?.emit(entry.ok ? 'network.response' : 'network.failed',
+        entry.ok ? '收到网页接口响应' : '网页接口请求中断或失败', {
+          pageId: entry.pageId, method: entry.method, url: entry.url,
+          status: entry.status, code: entry.failed, durationMs: entry.durationMs,
+        })
+    })
   }
 
   get busy() { return this.active > 0 }
@@ -255,6 +266,61 @@ export class BrowserDriver {
     }
   }
 
+  /** Use real wheel input in the conversation area to reveal the latest reply. */
+  async scrollToBottom({ signal } = {}) {
+    if (signal?.aborted) throw new BridgeError('aborted', '回复滚动已取消。')
+    const guard = this.replyPageGuard()
+    guard()
+    const page = await this.currentPage()
+    const state = await this.state(page)
+    if (state.manualAuth?.required) throw new BridgeError(`auth-required:${state.manualAuth.kind}`, '请先在网页完成登录或验证，再重试。')
+    this.activities.get(this.currentKey())?.emit('reply.scrolling-bottom', '正在将对话滚动到最底部，监听最新回复元素')
+    const viewport = page.viewportSize() || { width: 1440, height: 900 }
+    await page.mouse.move(viewport.width * 0.7, viewport.height * 0.4)
+    await page.mouse.wheel(0, 100000)
+    if (signal?.aborted) throw new BridgeError('aborted', '回复滚动已取消。')
+    guard()
+  }
+
+  /** Restore the owned reply surface without submitting another message. */
+  async reconnectReply({ turnKey, url, signal }) {
+    const guard = this.replyPageGuard()
+    const check = () => {
+      if (signal?.aborted) throw new BridgeError('aborted', '回复恢复已取消。')
+      guard()
+    }
+    check()
+    const page = await this.currentPage()
+    const authorize = async () => {
+      check()
+      const state = await this.state(page)
+      if (state.manualAuth?.required) throw new BridgeError(`auth-required:${state.manualAuth.kind}`, '请先在网页完成登录或验证，再重试。')
+    }
+    await authorize()
+    const activity = this.activities.get(this.currentKey())
+    const target = page.locator(`[data-content-search-unit-key^=${JSON.stringify(turnKey + ':')}]`).filter({ visible: true }).last()
+    const command = { signal, timeout: Math.min(2500, this.settings.commandTimeoutMs || 2500) }
+    const scrollAndFind = async () => {
+      check()
+      await this.scrollToBottom({ signal })
+      try {
+        await target.waitFor({ ...command, state: 'visible' })
+        await target.scrollIntoViewIfNeeded(command)
+        check()
+        return true
+      } catch (error) {
+        check()
+        if (error.name !== 'TimeoutError') throw error
+        return false
+      }
+    }
+    if (await scrollAndFind()) return { found: true, reloaded: false }
+    activity?.emit('reply.reloading', '滚动后仍未找到本轮元素，正在重新打开原网页会话')
+    await this.open(url, { signal, timeoutMs: Math.min(10000, this.settings.commandTimeoutMs || 10000) })
+    await authorize()
+    return { found: await scrollAndFind(), reloaded: true }
+  }
+
   exclusive(operation, sessionKey = DEFAULT_SESSION) {
     const key = String(sessionKey || DEFAULT_SESSION)
     const previous = this.queues.get(key) || Promise.resolve()
@@ -339,7 +405,7 @@ export class BrowserDriver {
       if (current && current !== 'about:blank') await headedPage.goto(current, { waitUntil: 'domcontentloaded', timeout: 45000 }).catch(() => {})
       return this.open(url, { ...options, headed: false })
     }
-    const response = await page.goto(String(url), { waitUntil: 'domcontentloaded', timeout: options.timeoutMs || 45000 })
+    const response = await page.goto(String(url), { waitUntil: 'domcontentloaded', timeout: options.timeoutMs || 45000, signal: options.signal })
     return { url: page.url(), status: response?.status() ?? null }
   }
 

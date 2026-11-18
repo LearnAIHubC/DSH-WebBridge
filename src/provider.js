@@ -19,6 +19,7 @@ import { BridgeError, digest } from './envelope.js'
 import { snapshotDelta, streamPreview } from './stream-text.js'
 import { CONTEXT_TOOL_NAME } from './context.js'
 import { contextHash, contextHashes } from './context-identity.js'
+import { createActivity } from './activity.js'
 
 // Composer text and model context have separate transports. Only genuine user
 // input belongs in the composer; every injected message remains in the snapshot.
@@ -335,6 +336,38 @@ export class WebChatAdapter {
 
   /** One provider attempt: one browser round trip, emitted as DSH chunks. */
   async *generate(options, preparedSelection) {
+    const activity = createActivity(this.settings, this.log, { sessionId: options.sessionId, site: this.settings.site })
+    const messages = Array.isArray(options.messages) ? options.messages : []
+    activity.emit('input.received', '收到 DSH 输入，开始处理本轮请求', {
+      messageCount: messages.length, toolCount: options.tools?.length || 0, purpose: options.purpose || 'chat',
+      inputChars: messages.reduce((total, message) => total + rawMessageText(message).length, 0),
+    })
+    let outputChars = 0
+    let outputStarted = false
+    let finished = false
+    try {
+      for await (const chunk of this.generateResponse({ ...options, activity }, preparedSelection)) {
+        if (chunk.type === 'text-delta') {
+          outputChars += chunk.text.length
+          if (!outputStarted) { outputStarted = true; activity.emit('output.started', '开始向 DSH 回传回复正文') }
+        }
+        if (chunk.type === 'finish') {
+          finished = true
+          activity.emit('output.finished', '本轮 DSH 输出结束', { outputChars, reason: chunk.reason?.kind })
+        }
+        yield chunk
+      }
+    } catch (error) {
+      finished = true
+      activity.emit('request.failed', '本轮请求失败', { code: error.cause?.code || error.code || error.name })
+      throw error
+    } finally {
+      if (!finished) activity.emit('request.cancelled', 'DSH 已停止读取本轮输出')
+    }
+  }
+
+  async *generateResponse(options, preparedSelection) {
+    const activity = options.activity
     const purpose = typeof options.purpose === 'string' ? options.purpose : ''
     const isMainChat = !purpose || purpose === 'chat'
     const messages = Array.isArray(options.messages) ? options.messages : []
@@ -459,6 +492,10 @@ export class WebChatAdapter {
         : this.contextStore.capture(contextInput)
       : null
     const contextChanged = Boolean(contextReference && !reuseContext)
+    activity.emit('context.prepared', '已准备本轮上下文和输入', {
+      promptChars: prompt.length, attachmentCount: attachments.length, nativeMcp,
+      contextChanged, contextId: contextReference?.context_id,
+    })
 
     // Native MCP tools already ran inside the completed web reply. A host
     // notice without new user input or effective context is not another task.
@@ -523,7 +560,10 @@ export class WebChatAdapter {
       if (withTools && state.contextDelivered) state.toolContext = toolContext
     }
     try {
-      if (nativeMcp && isMainChat) unwatch = this.toolScope?.watchUserInput?.(baseSessionId, () => { inputInterrupted = true; interrupt.abort() })
+      if (nativeMcp && isMainChat) unwatch = this.toolScope?.watchUserInput?.(baseSessionId, () => {
+        activity.emit('input.interrupted', '收到新的用户输入，正在中止上一轮等待')
+        inputInterrupted = true; interrupt.abort()
+      })
       let nextText = null
       let wake
       const publish = ({ text }) => {
@@ -537,6 +577,7 @@ export class WebChatAdapter {
         notify?.()
       }
       const ask = () => this.session.ask(message, {
+        activity,
         signal,
         sessionKey: sessionId,
         attachment,
@@ -552,6 +593,7 @@ export class WebChatAdapter {
           prepareMessage: async info => {
             const freshConversation = info.newConversation || info.reset
             const needsContext = freshConversation || !this.contextStore.isDelivered(contextReference.context_id)
+            activity.emit('message.prepared', '已确定要发送的网页消息和上下文引用', { needsContext, newConversation: freshConversation })
             return {
               text: needsContext ? contextMessage(freshConversation ? null : contextBase) : continuationMessage,
               // A fresh web conversation has none of the earlier user uploads,
@@ -566,7 +608,7 @@ export class WebChatAdapter {
         ...(attachments.length ? { attachments } : {}),
         ...((this.settings.site === 'chatgpt' || this.dualReasoning) && !webModel ? { reasoning: options.model === `${this.modelId}-instant` ? 'off' : 'on' } : this.settings.site === 'chatgpt' && webModel ? { webModel } : {}),
       })
-      const operation = this.toolScope && isMainChat ? this.toolScope.withSession(baseSessionId, ask, signal, { contextReference }) : ask()
+      const operation = this.toolScope && isMainChat ? this.toolScope.withSession(baseSessionId, ask, signal, { contextReference, activity }) : ask()
       let result
       if (nativeMcp) {
         let done = false

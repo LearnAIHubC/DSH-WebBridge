@@ -6,6 +6,7 @@ import { uploadProblem } from './attachments.js'
 import { randomUUID } from 'node:crypto'
 import { buildConversationReadExpression } from './conversation-sync.js'
 import { setTimeout as delay } from 'node:timers/promises'
+import { createActivity } from './activity.js'
 
 function transientBrowserError(error) {
   return error?.name === 'TimeoutError' || ['read-failed', 'conversation-not-ready', 'composer-not-ready', 'send-not-ready', 'message-not-sent'].includes(error?.code) ||
@@ -72,17 +73,20 @@ export class ChatSession {
     for (let attempt = 1; attempt <= 3; attempt++) {
       checkAborted(options.signal)
       try {
+        options.activity?.emit('page.waiting', '开始等待网页会话就绪', { attempt })
         const state = await this.driver.state()
         if (attempt > 1 || (options.url ? !sameConversationURL(state.url, url) : safeHost(state.url) !== safeHost(url))) {
           await this.driver.open(url, { headed: options.headed, signal: options.signal })
         }
         const ready = await this.authGate(await this.driver.state(), this.adapter(site).inputSelector, options)
         if (options.url && !sameConversationURL(ready.url, url)) throw new BridgeError('conversation-not-ready', '原网页会话尚未恢复，未发送消息。')
+        options.activity?.emit('page.ready', '网页会话已就绪')
         return ready
       } catch (error) {
         checkAborted(options.signal)
         if (!transientBrowserError(error)) throw error
         if (attempt === 3) throw new BridgeError('page-not-ready', '已重新连接 3 次，网页仍未就绪。请检查浏览器和网络后重试。', { attempts: attempt, phase: 'connect', cause: error.code || error.name })
+        options.activity?.emit('page.retry', '网页暂时不可用，准备重新连接', { attempt: attempt + 1, code: error.code || error.name })
         this.log(`[webbridge] 网页连接暂时不可用，正在重新连接（${attempt + 1}/3）`)
         await pause(Math.min(500, this.settings.commandTimeoutMs || 500), options.signal)
       }
@@ -95,6 +99,7 @@ export class ChatSession {
     // Sites also show short-lived interstitials ("Just a moment…", bot checks)
     // that clear by themselves; re-check once before calling it a hard failure.
     let current = state
+    if (current?.manualAuth?.required) options.activity?.emit('auth.waiting', '检测到登录或验证页面，正在复查', { kind: current.manualAuth.kind })
     for (let attempt = 0; attempt < 2 && current?.manualAuth?.required; attempt++) {
       await pause(Math.min(2500, this.settings.commandTimeoutMs || 2500), options.signal)
       try {
@@ -108,6 +113,7 @@ export class ChatSession {
     const manual = current?.manualAuth
     if (manual?.required) {
       const kind = manual.kind || 'login'
+      options.activity?.emit('auth.required', '网页需要用户完成登录或验证', { kind })
       throw new BridgeError(
         `auth-required:${kind}`,
         kind === 'verification'
@@ -158,6 +164,7 @@ export class ChatSession {
       .some((node) => Array.from(node.querySelectorAll('[app-mention-display-name]'))
         .some((mention) => mention.getAttribute('app-mention-display-name') === ${JSON.stringify(name)})) }))()`
     const selected = (await this.driver.eval(expression, { signal: options.signal }))?.result?.pluginSelected
+    options.activity?.emit('plugin.checked', '已检查输入框中的 MCP 插件', { selected: Boolean(selected) })
     if (selected && !options.attachment && !options.attachments?.length) return {}
     await this.driver.click('button[data-testid="composer-plus-btn"], form button:has(svg use[href*="plus"])', { signal: options.signal })
     const quotaText = (await this.driver.eval(`(() => [...document.querySelectorAll('button')].filter(button=>button.checkVisibility({checkOpacity:true,checkVisibilityCSS:true})).map(button=>button.innerText || '').find(text=>/更多上传额度/.test(text) && /后再上传/.test(text)) || '')()`, { signal: options.signal }))?.result || ''
@@ -168,6 +175,7 @@ export class ChatSession {
       throw new BridgeError('plugin-not-selected', `The ${name} plugin was not added to the web composer.`)
     }
     this.log(`[webbridge] plugin selected in composer: ${name}`)
+    options.activity?.emit('plugin.selected', '已在输入框中选中 MCP 插件')
     return { quota }
   }
 
@@ -208,13 +216,17 @@ export class ChatSession {
   }
 
   async confirmSubmission(text, adapter, baseline, options) {
+    options.activity?.emit('send.confirming', '开始监听本轮用户消息，确认发送结果')
     const deadline = Date.now() + Math.min(5000, this.settings.commandTimeoutMs || 5000)
     let state
     do {
       checkAborted(options.signal)
       try {
         state = await this.readSubmission(text, adapter, baseline, options.signal)
-        if (state.sent) return state
+        if (state.sent) {
+          options.activity?.emit('send.confirmed', '监听到本轮用户消息，已确认发送成功', { userTurnKey: state.sent.userTurnKey })
+          return state
+        }
       } catch (error) {
         if (!transientBrowserError(error)) throw error
         state = null
@@ -287,11 +299,15 @@ export class ChatSession {
           // Strategy dispatch: whatever model source the route carries applies
           // the choice; no site name is consulted here.
           if (!this.modelControl) throw new BridgeError('model-control-unavailable', '网页模型控制尚未就绪，尚未发送消息。')
+          options.activity?.emit('model.selecting', '开始等待并选择网页模型控件')
           await this.modelControl.select(options.webModel)
+          options.activity?.emit('model.selected', '已确认网页模型选择完成')
         }
         phase = 'fill'
+        options.activity?.emit('input.waiting', '开始监听输入框元素', { selector: adapter.inputSelector, attempt })
         if (attempt > 1) await this.driver.fillLong(adapter.inputSelector, '', command)
         await this.driver.fillLong(adapter.inputSelector, text, command)
+        options.activity?.emit('input.filled', '已找到输入框元素并填入本轮消息', { selector: adapter.inputSelector, chars: text.length })
         phase = 'prepare'
         // Refilling replaces app mentions. Keep existing uploads until a reload.
         const uploadOptions = contextAttachmentSkipped ? { ...options, attachment: null } : options
@@ -307,14 +323,23 @@ export class ChatSession {
           }
         }
         if (!options.webModel) await this.ensureReasoning(adapter, options.signal, options.reasoning || 'on')
-        if (options.watchId && this.driver.startGenerationWatch) await this.driver.startGenerationWatch(options.watchId, command)
+        if (options.watchId && this.driver.startGenerationWatch) {
+          await this.driver.startGenerationWatch(options.watchId, command)
+          options.activity?.emit('generation.listening', '已开始监听网页生成状态和停止按钮')
+        }
         checkAborted(options.signal)
         phase = 'send'
         const sendSelector = adapter.sendSelector || this.sitePreset(site).adapter.sendSelector
         let clickError
         sendAttempted = true
-        try { await this.driver.click(sendSelector, command) }
-        catch (error) { clickError = error }
+        options.activity?.emit('send.waiting', '开始监听发送按钮元素', { selector: sendSelector, attempt })
+        try {
+          await this.driver.click(sendSelector, command)
+          options.activity?.emit('send.clicked', '已找到发送按钮元素并点击', { selector: sendSelector })
+        } catch (error) {
+          clickError = error
+          options.activity?.emit('send.click-failed', '点击发送按钮失败，正在检查消息是否已经送出', { code: error.code || error.name })
+        }
         let state = await this.confirmSubmission(text, adapter, baseline, options)
         if (state.sent) return delivery(state.sent)
         await this.authGate(await this.driver.state(), adapter.inputSelector, options)
@@ -333,6 +358,7 @@ export class ChatSession {
           throw new BridgeError(code, `已尝试恢复并发送 3 次，${phase === 'fill' ? '输入框仍不可用' : phase === 'send' ? '消息仍未发出' : '网页仍未就绪'}。请检查原网页会话后重试。`, { attempts: attempt, phase, cause: error.code || error.name })
         }
         reload = reload || phase !== 'send' || attempt === 2
+        options.activity?.emit('send.retry', '准备恢复网页并重试发送', { phase, attempt: attempt + 1, reload, code: error.code || error.name })
         this.log(`[webbridge] ${phase} 阶段暂时失败，${reload ? '正在重新打开原会话' : '正在清空输入框并重新发送'}（${attempt + 1}/3）`)
         await pause(Math.min(250, timeoutMs), options.signal)
       }
@@ -342,6 +368,7 @@ export class ChatSession {
 
   async prepareAttachments(site, options, menuQuota) {
     if (!options.attachment && !options.attachments?.length) return { contextAttachmentDelivered: false, contextAttachmentSkipped: false }
+    options.activity?.emit('attachments.uploading', '开始上传本轮附件', { count: Number(Boolean(options.attachment)) + (options.attachments?.length || 0) })
     let lease
     let attempted = false
     try {
@@ -356,11 +383,13 @@ export class ChatSession {
         if (attached?.ok === false) throw new BridgeError('attachment-upload-failed', '网页没有接受系统上下文附件。')
       } else throw new BridgeError('attachment-upload-unavailable', 'The browser driver cannot upload these attachments.')
       await this.waitUploads(options.signal)
+      options.activity?.emit('attachments.ready', '本轮附件已上传完成')
       return { lease, contextAttachmentDelivered: Boolean(options.attachment), contextAttachmentSkipped: false }
     } catch (error) {
       await lease?.release?.()
       if (error.code !== 'attachment-quota-exceeded' || options.attachments?.length || !options.attachment) throw error
       this.log('[webbridge] attachment quota reached; skipping system TXT and preserving user text with the app')
+      options.activity?.emit('attachments.skipped', '附件额度不足，已跳过系统上下文文件', { code: error.code })
       await this.dismissUploadNotice()
       return { reset: attempted, contextAttachmentDelivered: false, contextAttachmentSkipped: true }
     }
@@ -394,7 +423,12 @@ export class ChatSession {
 
   async ask(text, options = {}) {
     const queueKey = options.sessionKey ? `${options.site || this.settings.site}:${options.sessionKey}` : this.sessionId
+    const activity = options.activity || createActivity(this.settings, this.log, { sessionId: options.sessionKey || this.sessionId, site: options.site || this.settings.site })
+    options = { ...options, activity }
+    activity.emit('request.queued', '网页请求已进入会话队列', { chars: String(text).length })
     return this.enqueue(async () => {
+      activity.emit('request.started', '开始处理网页请求')
+      this.driver.activities?.set(queueKey, activity)
       let uploaded
       let watchId
       let preservePage = false
@@ -478,6 +512,7 @@ export class ChatSession {
         }
       }
       await prepareMessage(conversation)
+      activity.emit('conversation.selected', '已选定本轮网页会话', { newConversation, generation })
       if ((sendOptions.attachment || sendOptions.attachments?.length) && this.driver.prepareUploads) await this.driver.prepareUploads()
 
       const baseline = await readReplyState(this.driver, adapter, options.signal)
@@ -516,6 +551,8 @@ export class ChatSession {
       const submission = { ...(submitted || {}), conversation, conversationReset: newConversation || submitted?.conversationReset === true }
       options.onSubmitted?.(submission)
 
+      activity.emit('reply.listening', '开始监听本轮回复元素，等待网页回复', { selector: adapter.messageSelector, expectedTurnKey: submitted?.userTurnKey || '' })
+      if (adapter.matchReplyToUserTurn) await this.driver.scrollToBottom?.({ signal: options.signal })
       const reply = await waitForReply({
         driver: this.driver,
         adapter,
@@ -525,7 +562,11 @@ export class ChatSession {
         log: this.log,
         expectedText: text,
         expectedTurnKey: submitted?.userTurnKey || '',
+        onReconnect: this.driver.reconnectReply ? ({ turnKey }) => this.driver.reconnectReply({
+          turnKey, url: submitted?.url || conversation.url, signal: options.signal,
+        }) : undefined,
         onProgress: options.onProgress,
+        activity,
       })
       // Container-less sites: the read returns the whole conversation, so drop
       // everything up to and including the prompt we just sent.
@@ -535,6 +576,7 @@ export class ChatSession {
         if (at >= 0) reply.text = reply.text.slice(at + marker.length).trim()
       }
       this.last = { site, count: reply.count, text: reply.text, at: Date.now() }
+      activity.emit('reply.captured', reply.truncated ? '已读取本轮部分回复' : '已读取本轮完整回复', { chars: reply.text.length, truncated: reply.truncated, replyId: reply.replyId })
       // After the exchange is over the site has definitely assigned the concrete
       // conversation URL, and the page title carries the conversation title
       // ("Reply cherry"). Remember both, so the next turn reopens this chat
@@ -563,6 +605,7 @@ export class ChatSession {
         contextAttachmentSkipped: submitted?.contextAttachmentSkipped === true,
       }
       } catch (error) {
+        activity.emit('browser-request.failed', '网页请求已结束', { code: error.code || error.name })
         preservePage = error.code === 'message-send-uncertain'
         throw error
       } finally {
@@ -570,6 +613,8 @@ export class ChatSession {
         if (watchId && this.driver.endGenerationWatch) await this.driver.endGenerationWatch(watchId).catch(() => {})
         await uploaded?.release?.()
         if (options.sessionKey && !preservePage) await this.driver.releasePage?.(queueKey)
+        if (this.driver.activities?.get(queueKey) === activity) this.driver.activities.delete(queueKey)
+        activity.emit('request.released', preservePage ? '已保留发送结果不明的网页现场' : '本轮网页操作已清理结束')
       }
     }, queueKey)
   }
@@ -643,6 +688,7 @@ export class ChatSession {
   }
 
   async startNewChat(site, options = {}) {
+    options.activity?.emit('conversation.resetting', '正在等待网页清空并创建新会话')
     const preset = this.sitePreset(site)
     // Verified 2026-11-17: opening the site root does NOT reset the chat (the
     // profile restores the last conversation), while the keyboard shortcut

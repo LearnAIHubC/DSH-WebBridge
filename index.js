@@ -31,7 +31,7 @@ import { join } from 'node:path'
 export const name = 'dsh-webbridge'
 export const inject = ['tools']
 
-const VERSION = '0.2.2'
+const VERSION = '0.3.2'
 
 const OUTPUT = {
   schema: { type: 'string' },

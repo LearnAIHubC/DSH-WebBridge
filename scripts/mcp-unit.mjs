@@ -7,6 +7,7 @@ import { McpBridge } from '../src/mcp.js'
 import { createOps } from '../src/ops.js'
 import { createToolScope } from '../src/dsh.js'
 import { dslToJsonSchema } from '../src/tool.js'
+import { createActivity } from '../src/activity.js'
 
 const schema = (name) => ({ name, description: name, parameters: { value: { type: 'string' } } })
 
@@ -93,6 +94,23 @@ test('native MCP execution uses the DSH session that initiated the web request',
   assert.notEqual(outcome.result.isError, true)
   assert.equal(records[0].agent, 'session-B')
   assert.deepEqual(JSON.parse(records[0].calls[0].arguments), { value: 'hello' })
+})
+
+test('MCP receives and returns results under the owning request trace without argument or result values', async t => {
+  const { rpc, toolScope } = await fixture(t)
+  const records = []
+  const activity = createActivity({}, line => records.push(JSON.parse(line.slice('[webbridge:flow] '.length))), { sessionId: 'session-B' })
+  const result = await toolScope.withSession('session-B', () => rpc('tools/call', {
+    name: 'read', arguments: { value: 'PRIVATE_TOOL_ARGUMENT' },
+  }), undefined, { activity })
+  assert.notEqual(result.result.isError, true)
+  assert.deepEqual(records.map(record => record.event), ['mcp.received', 'mcp.executing', 'mcp.output'])
+  assert.equal(new Set(records.map(record => record.requestId)).size, 1)
+  assert.equal(new Set(records.map(record => record.callId)).size, 1)
+  assert.deepEqual(records[0].argumentsShape.keys, ['value'])
+  assert.ok(records[2].outputChars > 0)
+  assert.equal(toolScope.activityFor('session-B'), undefined)
+  assert.doesNotMatch(JSON.stringify(records), /PRIVATE_TOOL_ARGUMENT|executed:session-B/)
 })
 
 test('MCP keeps the last bound DSH scope after the web request completes', async (t) => {

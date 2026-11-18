@@ -18,6 +18,18 @@ function wait(sequence, overrides = {}) {
   })
 }
 
+test('reply activity describes element state changes without repeating every poll or logging text', async () => {
+  const records = []
+  await wait([...Array(12).fill(old), { ...fresh, streaming: true }, { ...fresh, streaming: true, text: 'MORE_PRIVATE_TEXT' }, fresh, fresh], {
+    activity: { emit: (event, message, details) => records.push({ event, message, ...details }) },
+  })
+  assert.deepEqual(records.map(record => record.event), ['reply.waiting-turn', 'reply.streaming', 'reply.settling', 'reply.completed'])
+  assert.equal(records[0].targetMatches, false)
+  assert.equal(records[1].selector, '.reply')
+  assert.equal(records[1].targetMatches, true)
+  assert.doesNotMatch(JSON.stringify(records), /OLD_ANSWER|NEW_ANSWER|MORE_PRIVATE_TEXT|NEW_QUESTION/)
+})
+
 test('a reappearing old answer cannot complete the next DSH turn', async () => {
   const answer = await wait([old, old, { ...fresh, replyTurnKey: 'old-turn', text: 'OLD_ANSWER' }, fresh, fresh])
   assert.equal(answer.text, 'NEW_ANSWER')
@@ -44,6 +56,118 @@ test('identical answer text on a different user turn still counts as a new reply
 test('a stale reply times out instead of being returned as a partial answer', async () => {
   await assert.rejects(wait([old], { settings: { replyTimeoutMs: 25, pollIntervalMs: 1, stableSamples: 1 } }),
     (error) => error.code === 'reply-timeout')
+})
+
+test('a known new user turn never binds an earlier assistant row even when it differs from the baseline', async () => {
+  const progress = []
+  const stale = { ...fresh, replyTurnKey: 'earlier-turn', replyId: 'earlier-reply', text: 'STALE_REPLY', requestActive: true }
+  const result = await wait([stale, fresh, fresh], { expectedTurnKey: 'new-turn', onProgress: part => progress.push(part.text) })
+  assert.equal(result.text, 'NEW_ANSWER')
+  assert.deepEqual(progress, ['NEW_ANSWER'])
+})
+
+async function recoveryFixture(run) {
+  const originalNow = Date.now
+  let now = originalNow()
+  Date.now = () => now
+  try { await run(() => { now += 1000 }) }
+  finally { Date.now = originalNow }
+}
+
+test('a persistent return to an old turn reconnects the submitted turn once and keeps its reply', async () => {
+  await recoveryFixture(async tick => {
+    let reads = 0
+    let reconnected = false
+    const recoveries = []
+    const events = []
+    const result = await wait([], {
+      driver: { async eval() {
+        tick(); reads++
+        return { result: reads === 1 ? { ...fresh, streaming: true } : reconnected ? { ...fresh, completed: true } : { ...old, completed: true } }
+      } },
+      settings: { replyTimeoutMs: 0, pollIntervalMs: 1, stableSamples: 1 },
+      expectedTurnKey: 'new-turn',
+      onReconnect: async info => { recoveries.push(info); reconnected = true },
+      activity: { emit: event => events.push(event) },
+    })
+    assert.equal(result.text, 'NEW_ANSWER')
+    assert.equal(recoveries.length, 1)
+    assert.equal(recoveries[0].turnKey, 'new-turn')
+    assert.ok(events.includes('reply.reconnecting'))
+    assert.ok(events.includes('reply.reconnected'))
+  })
+})
+
+test('a short old-turn render is allowed to hydrate without reconnecting', async () => {
+  await recoveryFixture(async tick => {
+    const states = [{ ...fresh, streaming: true }, { ...old, completed: true }, { ...old, completed: true }, fresh, fresh]
+    let reads = 0
+    let recoveries = 0
+    const result = await wait([], {
+      driver: { async eval() { tick(); return { result: states[Math.min(reads++, states.length - 1)] } } },
+      settings: { replyTimeoutMs: 0, pollIntervalMs: 1, stableSamples: 1 },
+      expectedTurnKey: 'new-turn', onReconnect: async () => { recoveries++ },
+    })
+    assert.equal(result.text, 'NEW_ANSWER')
+    assert.equal(recoveries, 0)
+  })
+})
+
+test('an unsuccessful reconnect ends an unlimited old-turn wait without returning stale text', async () => {
+  await recoveryFixture(async tick => {
+    let recoveries = 0
+    await assert.rejects(wait([], {
+      driver: { async eval() { tick(); return { result: { ...old, completed: true } } } },
+      settings: { replyTimeoutMs: 0, pollIntervalMs: 1, stableSamples: 1 },
+      expectedTurnKey: 'new-turn', onReconnect: async () => { recoveries++ },
+    }), error => error.code === 'reply-turn-lost')
+    assert.equal(recoveries, 1)
+  })
+})
+
+test('a reconnect that leaves an empty page also ends instead of waiting forever', async () => {
+  await recoveryFixture(async tick => {
+    let reconnected = false
+    await assert.rejects(wait([], {
+      driver: { async eval() {
+        tick()
+        return { result: reconnected ? { count: 0, text: '' } : { ...old, completed: true } }
+      } },
+      settings: { replyTimeoutMs: 0, pollIntervalMs: 1, stableSamples: 1 },
+      expectedTurnKey: 'new-turn', onReconnect: async () => { reconnected = true },
+    }), error => error.code === 'reply-turn-lost')
+  })
+})
+
+test('a recovered live user turn can keep waiting for tool calls or a delayed answer', async () => {
+  await recoveryFixture(async tick => {
+    let reconnected = false
+    let liveReads = 0
+    const result = await wait([], {
+      driver: { async eval() {
+        tick()
+        const live = { ...fresh, text: '', replyTurnKey: '', streaming: true }
+        return { result: !reconnected ? { ...old, completed: true } : liveReads++ < 15 ? live : fresh }
+      } },
+      settings: { replyTimeoutMs: 0, pollIntervalMs: 1, stableSamples: 1 },
+      expectedTurnKey: 'new-turn', onReconnect: async () => { reconnected = true },
+    })
+    assert.equal(result.text, 'NEW_ANSWER')
+  })
+})
+
+test('cancellation during a reconnect ends the request without another read or recovery', async () => {
+  await recoveryFixture(async tick => {
+    const controller = new AbortController()
+    let recoveries = 0
+    await assert.rejects(wait([], {
+      driver: { async eval() { tick(); return { result: { ...old, completed: true } } } },
+      settings: { replyTimeoutMs: 0, pollIntervalMs: 1, stableSamples: 1 },
+      signal: controller.signal, expectedTurnKey: 'new-turn',
+      onReconnect: async () => { recoveries++; controller.abort() },
+    }), error => error.code === 'aborted')
+    assert.equal(recoveries, 1)
+  })
 })
 
 test('streaming content must settle within the matching user turn', async () => {

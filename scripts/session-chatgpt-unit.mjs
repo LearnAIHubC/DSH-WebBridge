@@ -90,6 +90,20 @@ async function send(provider, sessionId, content) {
   return text
 }
 
+test('one trace follows input, element waits, reply detection and DSH output without recording content', async () => {
+  const { provider } = fixture()
+  const records = []
+  provider.log = line => { if (line.startsWith('[webbridge:flow] {')) records.push(JSON.parse(line.slice('[webbridge:flow] '.length))) }
+  await send(provider, 'trace-session', 'PRIVATE_USER_MESSAGE')
+  const events = records.map(record => record.event)
+  for (const event of ['input.received', 'context.prepared', 'request.queued', 'page.ready', 'input.waiting', 'input.filled', 'send.waiting', 'send.clicked', 'send.confirmed', 'reply.listening', 'reply.settling', 'reply.completed', 'reply.captured', 'request.released', 'output.started', 'output.finished']) {
+    assert.ok(events.includes(event), event)
+  }
+  assert.equal(new Set(records.map(record => record.requestId)).size, 1)
+  assert.doesNotMatch(JSON.stringify(records), /PRIVATE_USER_MESSAGE/)
+  assert.equal(records.at(-1).reason, 'stop')
+})
+
 test('ChatGPT sessions get distinct conversations and resume their original conversation', async () => {
   const { provider, session, submitted, previous } = fixture()
   assert.match(await send(provider, 'A', '苹果'), /苹果/)
