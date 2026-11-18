@@ -3,14 +3,12 @@
 打开 DSH 的「设置 → ChatGPT 网页版」。
 
 1. 点击「登录网页版」，在弹出的 Chrome 中完成 ChatGPT 登录。
-2. 点击「登录控制台」，在浏览器中完成 OpenAI Platform 登录。
-3. 点击「连接隧道」。没有配置时创建 OpenAI Secure MCP Tunnel 和专用 Runtime API Key；只有测试 Key 时，在原 Tunnel ID 下升级为正式 Key；已有正式 Key 时复用。正式 Key 选择 Never；Windows 使用 CurrentUser DPAPI 加密，macOS 保存到登录钥匙串。连接或网页安装失败不会触发重复创建；创建提交结果不明时会停止创建，避免产生多把密钥。
-4. 插件启动官方 tunnel-client，绑定本机 MCP，等待健康检查及控制面轮询成功。
-5. 首次连接时自动创建 Nexus DSH 网页插件，再设置「允许使用所有工具」并刷新工具。重试时复用已保存的插件 ID 和隧道关联；搜索结果按插件 ID 去重。发现无法确认属于当前隧道的同名定义时会停止，不覆盖或删除它。
+2. 在 OpenAI 控制台自行创建 Secure MCP Tunnel 和 Runtime API Key，把 Tunnel ID 填进「渠道」、密钥填进「API Key」。逐步说明见 [如何获取渠道与 API Key](CHANNEL-AND-API-KEY.md)。设置页不再代登录控制台，也不会自动创建隧道或密钥。
+3. 点击「保存并连接」。插件用填写的 Tunnel ID 与 Runtime API Key 启动官方 tunnel-client，绑定本机 MCP，等待健康检查及控制面轮询成功。密钥在 Windows 上使用当前用户 DPAPI 加密，macOS 保存到登录钥匙串；输入框留空表示保留已保存的密钥。
+4. 首次连接时自动创建 Nexus DSH 网页插件，再设置「允许使用所有工具」并刷新工具。重试时复用已保存的插件 ID 和隧道关联；搜索结果按插件 ID 去重。发现无法确认属于当前隧道的同名定义时会停止，不覆盖或删除它。
+5. 账号登录、验证码和人机验证始终由用户完成。读取状态不会重启浏览器或关闭正在填写的表单。
 
-账号登录、验证码和人机验证始终由用户完成。登录操作先检查已有会话，最多等待五分钟供用户手动登录；检测成功后显示「登录成功，可以连接隧道」。读取状态不会重启浏览器或关闭正在填写的表单。配置失败可以重试，已保存的隧道及密钥不会重复创建。
-
-已有 Tunnel ID / Runtime API Key 可以在「隧道与 API Key」中填写。Runtime Key 仅需 Tunnels 的 **Read、Use**。这与 ChatGPT 对 DSH 工具的授权是两个不同的权限面；网页插件允许使用当前 DSH 会话的全部可用工具，执行仍经过 DSH 的权限与工具执行器。
+Runtime Key 仅需 Tunnels 的 **Read、Use**。这与 ChatGPT 对 DSH 工具的授权是两个不同的权限面；网页插件允许使用当前 DSH 会话的全部可用工具，执行仍经过 DSH 的权限与工具执行器。
 
 「高级设置」提供系统代理、直连、自定义代理、断线自动重连和工具自动刷新。存在多个 ChatGPT 工作区时，在此填目标工作区 ID；默认 API 项目名称为 Default project。
 
