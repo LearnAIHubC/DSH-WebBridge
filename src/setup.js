@@ -102,28 +102,22 @@ export class WebBridgeSetup {
         this.fingerprint = this.catalogFingerprint()
         return
       }
+      // The person provisions every web resource themselves: the OpenAI
+      // tunnel, the Runtime API Key, and the ChatGPT plugin. Connecting only
+      // stores the submitted credentials and starts the official tunnel
+      // client; nothing is created or changed on the OpenAI or ChatGPT side.
       if (command.tunnelId || command.runtimeApiKey || command.networkMode || command.healthPort) {
-        // Save existing/manual credentials; missing ones are provisioned below.
         if ((command.runtimeApiKey || this.tunnel.config?.runtimeApiKey) && (command.tunnelId || this.tunnel.config?.tunnelId)) {
           await this.tunnel.configure(command)
           this.storageError = ''
         }
       }
-      const upgradeTestKey = Boolean(this.tunnel.config?.runtimeApiKey && this.tunnel.config?.keyExpiresAt)
-      if (!this.tunnel.status().configured || upgradeTestKey) {
-        await this.browser.createResources({
-          ...this.preferences, tunnelId: this.tunnel.config?.tunnelId || command.tunnelId,
-          testKey: false, upgradeTestKey,
-          onKey: values => this.tunnel.configure({ ...command, ...values }),
-        })
+      if (!this.tunnel.status().configured) {
+        throw new Error('需要先填写渠道（Tunnel ID）和 Runtime API Key。隧道、密钥和 ChatGPT 网页插件都由你自行创建，步骤见帮助文档「如何获取渠道与 API Key」。')
       }
       this.job.stage = '正在连接 OpenAI 官方隧道'
       await this.tunnel.start()
       await this.tunnel.waitReady()
-      this.job.stage = '正在配置 ChatGPT 网页插件'
-      // Verify and reuse an existing definition before attempting creation.
-      await this.browser.install(this.tunnel.config.tunnelId)
-      this.browser.auth.chatgpt = 'ready'
       this.onReinstall()
       this.fingerprint = this.catalogFingerprint()
     })

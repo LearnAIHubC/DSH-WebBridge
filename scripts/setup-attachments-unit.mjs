@@ -266,49 +266,30 @@ test('a verified free account advertises thinking and non-thinking models and fo
   assert.deepEqual(sent.map(options => options.reasoning), ['on', 'off'])
 })
 
-test('saved credentials are never provisioned again when connecting after a restart', async () => {
-  let created = 0, installed = 0
-  const config = { tunnelId: 'tunnel_existing', runtimeApiKey: 'existing-secret', autoReconnect: true }
-  const tunnel = { config, state: { status: 'connected' }, async load() {}, status: () => ({ configured: true }), async start() {}, async waitReady() {}, async stop() {}, redact: value => value }
+test('connecting with saved credentials starts the tunnel and never touches web resources', async () => {
+  let created = 0, installed = 0, started = 0
+  const config = { tunnelId: 'tunnel_existing', runtimeApiKey: 'existing-secret', autoReconnect: false }
+  const tunnel = { config, state: { status: 'connected' }, async load() {}, status: () => ({ configured: true }), async start() { started++ }, async waitReady() {}, async stop() {}, redact: value => value }
   const browser = { saved: {}, auth: {}, async load() {}, async persist() {}, async createResources() { created++ }, async install() { installed++ } }
   const controller = new WebBridgeSetup({ settings: {}, driver: { busy: false, exclusive: fn => fn() }, bridge: { status: () => ({}), catalog: () => [] }, tunnel, browser })
   await controller.initialize()
   controller.execute({ action: 'connect' }); await controller.pending
   controller.execute({ action: 'connect' }); await controller.pending
   assert.equal(created, 0)
-  assert.equal(installed, 2)
+  assert.equal(installed, 0)
+  assert.equal(started, 2)
   await controller.dispose()
 })
 
-test('connect upgrades a test key once on the same tunnel and reuses the permanent key after an install failure', async () => {
-  let created = 0, installed = 0
-  const tunnel = {
-    config: { tunnelId: 'tunnel_existing', runtimeApiKey: 'test-secret', keyExpiresAt: '2030-01-01T00:00:00Z' },
-    state: { status: 'connected' }, status: () => ({ configured: true }),
-    async configure(values) { this.config = { ...this.config, ...values } },
-    async start() {}, async waitReady() {}, redact: value => value,
-  }
-  const browser = {
-    saved: {}, auth: {}, async persist() {},
-    async createResources({ tunnelId, testKey, upgradeTestKey, onKey }) {
-      assert.equal(tunnelId, 'tunnel_existing'); assert.equal(testKey, false); assert.equal(upgradeTestKey, true)
-      created++; await onKey({ tunnelId, runtimeApiKey: 'permanent-secret', keyExpiresAt: '' })
-    },
-    async install() { installed++; if (installed === 1) throw new Error('plugin failed after saving the permanent key') },
-  }
-  const controller = new WebBridgeSetup({ settings: {}, driver: { exclusive: fn => fn() }, bridge: { status: () => ({}), catalog: () => [] }, tunnel, browser })
+test('connecting without credentials explains the manual setup instead of provisioning', async () => {
+  let created = 0
+  const tunnel = { config: null, state: { status: 'not-configured' }, async load() {}, status: () => ({ configured: false }), async start() {}, async waitReady() {}, async stop() {}, redact: value => value }
+  const browser = { saved: {}, auth: {}, async load() {}, async persist() {}, async createResources() { created++ } }
+  const controller = new WebBridgeSetup({ settings: {}, driver: { busy: false, exclusive: fn => fn() }, bridge: { status: () => ({}), catalog: () => [] }, tunnel, browser })
   controller.execute({ action: 'connect' }); await controller.pending
-  assert.equal(tunnel.config.keyExpiresAt, '')
-  controller.execute({ action: 'connect' }); await controller.pending
-  assert.equal(created, 1); assert.equal(installed, 2)
-  assert.equal(tunnel.config.tunnelId, 'tunnel_existing')
-  assert.equal(controller.read().job.error, '')
-})
-
-test('an uncertain remote API key creation is never automatically repeated', async () => {
-  const browser = new SetupBrowser({ settings: { stateDir: '.' }, driver: { async open() { throw new Error('must not navigate') } } })
-  browser.saved = { resourceKeyPending: true }
-  await assert.rejects(browser.createResources({ tunnelId: 'tunnel_existing', upgradeTestKey: true, onKey: () => {} }), /不会自动重复创建/)
+  assert.equal(created, 0)
+  assert.match(controller.read().job.error, /自行创建/)
+  await controller.dispose()
 })
 
 test('DSH file mentions upload the selected file, including quoted and unquoted paths with spaces', async () => {
@@ -348,24 +329,19 @@ test('image-only user turns are sent and continuing turns upload only new attach
   assert.equal(sent[1].message, '用户：第二轮问题')
 })
 
-test('connect keeps a created key after a later plugin failure, and retry does not create another key', async () => {
-  let configured = false, created = 0, installed = 0
+test('connect stores submitted credentials and starts the tunnel without creating anything', async () => {
+  let created = 0, started = 0
   const tunnel = {
-    config: null, state: { status: 'connected' },
-    status: () => ({ configured, tunnelId: configured ? 'tunnel_test' : '' }),
-    async configure(values) { configured = true; this.config = values },
-    async start() {}, async waitReady() {}, redact: value => value,
+    config: null, state: { status: 'stopped' },
+    status() { return { configured: Boolean(this.config?.runtimeApiKey) } },
+    async configure(values) { this.config = { tunnelId: 'tunnel_test', ...values } },
+    async start() { started++ }, async waitReady() {}, async stop() {}, redact: value => value,
   }
-  const browser = {
-    saved: {}, auth: {}, async persist() {},
-    async createResources({ onKey, testKey }) { assert.equal(testKey, false); created++; await onKey({ tunnelId: 'tunnel_test', runtimeApiKey: 'test-key' }) },
-    async install() { installed++; if (installed === 1) throw new Error('web failure') },
-  }
+  const browser = { saved: {}, auth: {}, async load() {}, async persist() {}, async createResources() { created++ } }
   const controller = new WebBridgeSetup({ settings: {}, driver: { exclusive: fn => fn() }, bridge: { status: () => ({}), catalog: () => [] }, tunnel, browser })
-  controller.execute({ action: 'connect' }); await controller.pending
-  assert.match(controller.read().job.error, /web failure/)
-  controller.execute({ action: 'connect' }); await controller.pending
-  assert.equal(created, 1)
-  assert.equal(installed, 2)
+  controller.execute({ action: 'connect', tunnelId: 'tunnel_test', runtimeApiKey: 'manual-secret' }); await controller.pending
+  assert.equal(created, 0)
+  assert.equal(started, 1)
   assert.equal(controller.read().job.error, '')
+  await controller.dispose()
 })

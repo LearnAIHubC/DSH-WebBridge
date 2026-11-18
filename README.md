@@ -9,8 +9,8 @@
 1. 克隆此仓库，安装 Node.js 22 或更新版本，以及 Google Chrome。
 2. 在项目目录运行 `npm ci` 和 `npm run build:client`。
 3. 在 DSH 插件管理中加载项目目录。
-4. 打开「设置 → ChatGPT 网页版」，在 WebBridge 自己的浏览器窗口中手动登录 ChatGPT 与 OpenAI 控制台。
-5. 点击「连接隧道」。插件创建或复用 OpenAI Secure MCP Tunnel，并配置 Nexus DSH 网页插件。
+4. 打开「设置 → ChatGPT 网页版」，点「登录网页版」，在 WebBridge 自己的浏览器窗口中手动完成 ChatGPT 登录。
+5. 在 OpenAI 控制台自行创建 Secure MCP Tunnel 与 Runtime API Key，并在 ChatGPT 网页里创建 Nexus DSH 插件；把 Tunnel ID 填进「渠道」、密钥填进「API Key」，点「保存并连接」。获取方式见 [如何获取渠道与 API Key](docs/CHANNEL-AND-API-KEY.md)。
 6. 在 DSH 会话中选择「ChatGPT 网页版」。免费账号提供思考和非思考两种模式。
 
 macOS 桌面版也可以用安装包自带的命令加载本地插件：
@@ -21,7 +21,7 @@ macOS 桌面版也可以用安装包自带的命令加载本地插件：
 
 在仓库目录执行。桌面版命令使用与 App 一致的 DSH 运行时；另装的 npm `dsh` 不负责管理 `desktop` profile。安装后可在「设置 → ChatGPT 网页版」查看。
 
-详细操作见 [ChatGPT 设置](docs/CHATGPT-SETUP.md)。
+详细操作见 [ChatGPT 设置](docs/CHATGPT-SETUP.md)；隧道与密钥的获取见 [如何获取渠道与 API Key](docs/CHANNEL-AND-API-KEY.md)。
 
 ## 工作方式
 
