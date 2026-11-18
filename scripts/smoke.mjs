@@ -59,14 +59,16 @@ try {
     new Function(`return ${expr}`)
   })
 
-  test('deepseek adapter enables the reasoning toggle by default', () => {
-    const adapter = loadAdapter(resolveSettings({ adapterDir: tmp + '/none', site: 'deepseek' }), 'deepseek')
-    assert.equal(adapter.reasoning.text, '深度思考')
-    assert.equal(adapter.reasoning.selectedClass, 'ds-toggle-button--selected')
+  test('ChatGPT is the only supported site and stale configuration migrates safely', () => {
+    assert.deepEqual(Object.keys(SITE_PRESETS), ['chatgpt'])
+    assert.equal(resolveSettings().site, 'chatgpt')
+    assert.equal(resolveSettings({ site: 'deepseek' }).site, 'chatgpt')
+    assert.throws(() => loadAdapter(settings, 'deepseek'), (error) => error.code === 'unknown-site')
+    const adapter = loadAdapter(resolveSettings({ adapterDir: tmp + '/none' }), 'chatgpt')
     const expr = buildReasoningStateExpression(adapter)
-    assert.ok(expr.includes('深度思考'))
+    assert.ok(expr.includes('Think'))
     new Function(`return ${expr}`)
-    assert.equal(reasoningClickSelector(adapter), 'text=深度思考')
+    assert.match(reasoningClickSelector(adapter), /Think/)
   })
 
   test('success envelope is JSON with ok:true', () => {

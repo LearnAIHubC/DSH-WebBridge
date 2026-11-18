@@ -147,6 +147,54 @@ test('startup and mode switches keep saved conversations closed until a task use
   } finally { await rm(dir, { recursive: true, force: true }) }
 })
 
+test('turning off debug mode while busy closes the visible browser after the active task', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'wb-debug-pending-'))
+  try {
+    const driver = new BrowserDriver({ stateDir: dir })
+    driver.debugMode = true
+    driver.lastMode = { headed: true }
+    let closed = 0
+    driver.context = { close: async () => { closed++ } }
+    let release
+    let markStarted
+    const started = new Promise(resolve => { markStarted = resolve })
+    const gate = new Promise(resolve => { release = resolve })
+    const active = driver.exclusive(async () => { markStarted(); await gate }, 'session-active')
+    await started
+
+    const result = await driver.setDebugMode(false)
+    assert.equal(result.pending, true)
+    assert.equal(driver.debugMode, false)
+    assert.equal(driver.headless, false)
+    assert.equal(closed, 0)
+
+    release()
+    await active
+    assert.equal(closed, 1)
+    assert.equal(driver.context, null)
+    assert.equal(driver.headless, true)
+    assert.equal(driver.modeChangePending, false)
+  } finally { await rm(dir, { recursive: true, force: true }) }
+})
+
+test('temporary headed mode requested by an active task closes when that task finishes', async () => {
+  const driver = new BrowserDriver({ stateDir: '' })
+  driver.debugMode = false
+  driver.lastMode = { headed: true }
+  let closed = 0
+  driver.context = { close: async () => { closed++ } }
+
+  await driver.exclusive(async () => {
+    const result = await driver.switchToHeadless()
+    assert.equal(result.pending, true)
+    assert.equal(closed, 0)
+  }, 'session-active')
+
+  assert.equal(closed, 1)
+  assert.equal(driver.context, null)
+  assert.equal(driver.headless, true)
+})
+
 test('one task reuses Chrome’s initial blank page and closing it retains its conversation address', async () => {
   const driver = new BrowserDriver({ stateDir: '' })
   let closed = false

@@ -1,75 +1,59 @@
-# 把网页版模型注册成 DSH 模型（provider 适配器）
+# 把 ChatGPT 网页版注册成 DSH 模型
 
-目标：在 DSH 的模型选择器里出现两个"模型"，像普通模型一样用：
+当前插件只注册一个网页模型 provider：
 
-| provider id | 大脑 | 工具 |
+| provider id | 网页模型 | 工具路径 |
 | --- | --- | --- |
-| `webbridge-deepseek` | DeepSeek 网页版 | 通过 A+ 文本协议调用 DSH 工具（可选） |
-| `webbridge-chatgpt` | ChatGPT 网页版 | ChatGPT 那边挂着我们的 MCP 连接器，工具就是 DSH 的工具 |
+| `webbridge-chatgpt` | ChatGPT 网页版 | ChatGPT 原生 MCP → 本地 WebBridge → DSH 工具执行器 |
 
-两者共用同一套浏览器驱动，只是"站点/账号"不同——相当于给 provider 配不同的账号。
+DeepSeek 网页版 provider、站点预设和 DOM 适配器已移除。配置中遗留的 `site: deepseek` 会在加载时迁移为 `chatgpt`；会话与适配器路径显式传入未知站点会返回 `unknown-site`。
 
-## 已确认的宿主接口（从安装版反查，非猜测）
+## 宿主接口
 
-来源：`@deepseek-ai/dsh-llm` 的 `LlmAdapter` 基类（`lib/index.js`）与
-`dsh-opencode-go` 的注册方式（`lib/index.js:8198`）：
+来源是安装版 `@deepseek-ai/dsh-llm` 的 `LlmAdapter` 基类。这里的 `deepseek-ai` 是 DSH 宿主包命名，不代表插件仍支持 DeepSeek 网页版。
 
 ```js
-// 注册（幂等失败：同一 route 重复注册抛 DUPLICATE_ADAPTER）
-const handle = ctx.llm.registerAdapter(['webbridge-deepseek'], adapter)
-handle.replace(['webbridge-deepseek'])   // 目录刷新
-handle()                                  // 注销
+const handle = ctx.llm.registerAdapter(['webbridge-chatgpt'], adapter)
+handle.replace(['webbridge-chatgpt']) // 刷新目录
+handle()                               // 注销
 ```
 
-适配器需要实现/覆写：
+适配器实现以下接口：
 
 | 方法 | 作用 |
 | --- | --- |
-| `providerInfo(provider)` | 返回 `{ id, name, ... }`，id 必须等于 route |
-| `listModels(provider)` | 返回可被 GUI 选择的模型目录（不实现 = GUI 里选不到） |
-| `resolveModel(provider, model, signal)` | 模型元数据：上下文长度、是否支持工具、reasoning 档位 |
-| `prepareCall(provider, model, signal)` | 返回 `{ model, stream(options) }`，把"元数据 + 本次调用的 stream"绑定到同一代配置 |
-| `stream(options)` / `generate(options)` | **async generator**，逐个 yield chunk；`options` 里有 `{provider, model, messages, tools?, signal, sessionId?}` |
-| `providerRetryPolicy(provider)` | 可选，重试策略 |
-| `imageRequestPricing/Target` | 可选，图片计价/缩放 |
+| `providerInfo(provider)` | 返回 provider 名称与标识 |
+| `listModels(provider)` | 构建模型选择器目录；付费账号从网页动态读取模型与推理档位 |
+| `resolveModel(provider, model, signal)` | 返回上下文长度、输入模态和推理档位等元数据 |
+| `prepareCall(provider, model, signal)` | 把本次模型选择和流式调用绑定到同一代网页配置 |
+| `stream(options)` / `generate(options)` | 驱动网页会话并逐个产出 DSH chunk |
 
-还有 `ctx.llm.registerModelDiscovery(name, async (request, signal) => ...)` 用于动态发现模型。
+## 当前实现
 
-## 还差的一块（下一步要确认）
-
-`stream()` 产出的 **chunk 词表**：文本增量、工具调用增量、用量、结束原因分别长什么样。
-找到的最接近的参考是 `@deepseek-ai/dsh-llm-deepseek` 的 `generate(options, connection)`：
-
-```js
-async *generate(options, connection) { ... yield next.value ... }
+```text
+@local/dsh-webbridge
+└─ provider: webbridge-chatgpt
+   ├─ ChatSession(chatgpt)
+   ├─ Nexus DSH 原生 MCP
+   ├─ dsh_get_context 上下文初始化与增量更新
+   └─ ChatGPT 网页正文流式同步
 ```
 
-它消费 `options.messages`（含 tools）并 yield 事件；事件类型定义在 dsh-llm 的类型里。
-下一步：在 `dsh-llm-deepseek` 里定位一个完整的 yield 序列（文本 delta + 结束 + usage），
-照着映射我们的网页回复即可。
+一次模型请求按下面的顺序处理：
 
-## 实现草案（不依赖浏览器以外的假设）
+1. 解析账号档位与所选网页模型；需要时在发送前切换模型和推理等级。
+2. 为每个 DSH session 恢复或新建独立 ChatGPT 会话。
+3. 输入框只发送新增用户内容和短 `context_id` 引导；完整系统提示、项目规则、历史和工具目录通过 `dsh_get_context` 读取。
+4. ChatGPT 在网页侧通过 Nexus DSH MCP 调用工具。WebBridge 继续使用 DSH 原执行器，因此权限、审批和工具历史保持不变。
+5. 网页生成期间持续产出 `text-delta`；完成后用完整网页正文构建最终文本块。
+6. 登录、验证、发送失败、上下文未完整读取或网页停止生成时，返回稳定错误，不把旧回复当成本轮结果。
 
-```
-plugin: @local/dsh-webbridge
-  ├─ provider: webbridge-deepseek   → ChatSession(deepseek)  → 拼 prompt → 读 DOM 回复
-  └─ provider: webbridge-chatgpt    → ChatSession(chatgpt)   → 拼 prompt → 读 DOM 回复
-```
-
-一次 `stream()` 的处理：
-
-1. 把 `options.messages` 压成一条消息：system + 历史 + 最后用户消息（网页版没有 system 角色，
-   只能在首条注入，见 `docs/PROTOCOL.md`）。
-2. 如果 `options.tools` 非空：把工具表按 A+ 协议注入，并把回复里的 `<<<TOOL_CALLS>>>` /
-   `<tool_call>` / DSML invoke 解析成 **tool_call chunk**，让 DSH 的 agent loop 去执行。
-3. 没有工具或模型直接给出文本：按文本增量 yield，最后 yield 结束块。
-4. 超时/登录态/风控：抛出 `LlmError` 风格的错误码（`AUTH_REQUIRED` / `TIMEOUT` / `TRANSPORT`），
-   让 `dsh-llm-retry` 与 UI 能正常处理。
+`webbridge_agent` 仍保留为独立的实验工具，用文本协议运行兼容工具回环；它不是模型选择器中的第二个 provider，也不会恢复任何已删除的站点支持。
 
 ## 验收标准
 
-1. 模型选择器里出现 `DeepSeek (网页版)` 与 `ChatGPT (网页版)` 两项。
-2. 选中后发一句"只回复两个字：收到"，聊天里出现模型回答。
-3. 开启工具后，能完成一次 `read` 工具调用并继续回答（agent loop 不崩）。
-
-第 1、2 步是"可用"的底线；第 3 步是"能干活"。
+1. 模型选择器只出现 `ChatGPT 网页版` 的 WebBridge provider。
+2. 免费账号提供思考和非思考模式；付费账号显示网页实际可用模型与推理档位。
+3. 新会话能先完整读取 DSH 上下文，再回答用户输入。
+4. 网页 MCP 工具调用能在 DSH 中显示原生工具卡片并遵守原有权限策略。
+5. `site: deepseek` 不会注册为网页模型，也不能加载会话适配器。

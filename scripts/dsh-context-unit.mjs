@@ -373,7 +373,6 @@ test('unbound callers retain their explicit signal and legacy execution behavior
 
 for (const route of [
   { name: 'a ChatGPT request without a native context binding', provider: 'webbridge-chatgpt', withSession: true },
-  { name: 'the DeepSeek compatibility route', provider: 'webbridge-deepseek', withSession: true },
   { name: 'standalone agent tool execution', provider: 'standalone-agent', withSession: false },
 ]) {
   test(`${route.name} does not acquire native file-rule checkpoints`, async () => {
@@ -405,12 +404,12 @@ test('a native context binding does not manufacture a file checkpoint', async ()
   assert.equal(scope.hasContextCheckpoint('session-A'), false)
 })
 
-test('a compatibility context enqueue failure cannot introduce a native checkpoint', async () => {
+test('an unbound WebBridge context enqueue failure cannot introduce a native checkpoint', async () => {
   const update = injection('compatibility-context')
   const { scope, agents, prepare } = fixture({ execute: () => ({
     results: [{ result: { content: text('action succeeded') } }], additionalContexts: [update],
   }) })
-  await prepare('session-A', 1, 1, 'webbridge-deepseek')
+  await prepare('session-A', 1, 1, 'webbridge-chatgpt')
   agents[0].inbox.splice = () => { throw new Error('compatibility inbox failure') }
   const result = await scope.withSession('session-A', () => scope.execute('lookup', {}))
   assert.equal(result.ok, true)

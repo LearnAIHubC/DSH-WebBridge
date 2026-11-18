@@ -1,11 +1,20 @@
 import { readFileSync, writeFileSync, readdirSync, existsSync } from 'node:fs'
 import { join } from 'node:path'
 import { SITE_PRESETS, expandHome } from './config.js'
+import { BridgeError } from './envelope.js'
 import { domToMarkdown } from './markdown.js'
 
 /** Path of the persisted adapter for one site. */
 export function adapterPath(settings, site) {
   return join(expandHome(settings.adapterDir), `${site}.json`)
+}
+
+function presetAdapter(site) {
+  const preset = SITE_PRESETS[site]?.adapter
+  if (!preset) {
+    throw new BridgeError('unknown-site', `Unknown site "${site}". Known: ${Object.keys(SITE_PRESETS).join(', ')}`)
+  }
+  return preset
 }
 
 /**
@@ -14,7 +23,7 @@ export function adapterPath(settings, site) {
  * against a real page.
  */
 export function loadAdapter(settings, site) {
-  const preset = SITE_PRESETS[site]?.adapter ?? SITE_PRESETS.chatgpt.adapter
+  const preset = presetAdapter(site)
   const file = adapterPath(settings, site)
   if (!existsSync(file)) return { ...preset, site, source: 'preset' }
   try {
@@ -45,6 +54,7 @@ export function listAdapters(settings) {
   return readdirSync(dir)
     .filter((name) => name.endsWith('.json'))
     .map((name) => name.slice(0, -5))
+    .filter((site) => Boolean(SITE_PRESETS[site]))
 }
 
 /**
@@ -121,7 +131,7 @@ export function buildReadExpression(adapter) {
   })()`
 }
 
-/** State of the site's reasoning toggle (DeepSeek 深度思考), read from the DOM. */
+/** State of the site's reasoning toggle, read from the DOM. */
 export function buildReasoningStateExpression(adapter) {
   const selector = JSON.stringify(adapter.reasoning?.selector || '')
   const text = JSON.stringify(adapter.reasoning?.text || '')
@@ -144,13 +154,7 @@ export function buildReasoningStateExpression(adapter) {
   })()`
 }
 
-/**
- * Playwright selector for clicking the reasoning toggle.
- *
- * Measured on DeepSeek: `div.ds-toggle-button:has-text("深度思考")` fails with
- * `"has-text" engine expects a single string`, while `text=深度思考` works and
- * the click bubbles up to the toggle's handler.
- */
+/** Playwright selector for clicking the configured reasoning toggle. */
 export function reasoningClickSelector(adapter) {
   if (adapter.reasoning?.clickSelector) return adapter.reasoning.clickSelector
   const text = adapter.reasoning?.text

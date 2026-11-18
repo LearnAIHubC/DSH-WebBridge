@@ -17,12 +17,13 @@ import { createOps } from './src/ops.js'
 import { McpBridge } from './src/mcp.js'
 import { defineTool } from './src/tool.js'
 import { ok, toFailure, auditRecord, BridgeError } from './src/envelope.js'
-import { runAgentLoop, createMetaTools, parseReply } from './src/agent.js'
+import { runAgentLoop, createMetaTools } from './src/agent.js'
 import { writeActivation } from './src/activation.js'
 import { createToolScope } from './src/dsh.js'
 import { WebChatAdapter } from './src/provider.js'
 import { WebBridgeSetup, mountSetupService } from './src/setup.js'
 import { ChatgptModels } from './src/chatgpt-models.js'
+import { planConversationSync, appendMissingWebTurns } from './src/conversation-sync.js'
 import { ContextStore, CONTEXT_TOOL_NAME, CONTEXT_INSTRUCTIONS, CONTEXT_PARAMETERS } from './src/context.js'
 import { writeFileSync } from 'node:fs'
 import { join } from 'node:path'
@@ -51,7 +52,7 @@ const TOOLS = [
     description:
       'Open a web chat site in the persistent browser profile and report whether sign-in or verification is required. Sign-in is always completed by the user in the visible browser.',
     parameters: {
-      site: { type: 'string', description: 'Site key: chatgpt or deepseek. Defaults to the configured site.' },
+      site: { type: 'string', description: 'Site key: chatgpt. Defaults to the configured site.' },
       url: { type: 'string', description: 'Explicit URL to open instead of the site default.' },
       headed: { type: 'boolean', description: 'Show the browser window, needed for manual sign-in.' },
     },
@@ -150,10 +151,16 @@ export function apply(ctx, config = {}) {
       const adapter = [...adapters].find(item => item.providerId === provider)
       if (!adapter) throw new BridgeError('provider-unavailable', '当前网页模型没有可用的 WebBridge provider。')
       const web = await adapter.syncSession(sessionId)
-      const context = toolScope.resetSession(sessionId)
-      const mcp = bridge.resetSessionBinding(sessionId)
-      log(`[webbridge] synchronized session ${sessionId} provider=${provider} mcp=${mcp.bindingsReset}`)
-      return { sessionId, provider, web, context, mcp, syncedAt: new Date().toISOString() }
+      const result = await toolScope.withSessionMaintenance(sessionId, ({ session, boundary }) => {
+        const plan = planConversationSync(session.deriveMessages(), web.messages, web.url)
+        const imported = appendMissingWebTurns(session, boundary, plan.missing, {
+          provider: adapter.providerId, model: adapter.modelId,
+        })
+        adapter.noteSynchronized(sessionId, session.deriveMessages())
+        return { imported, visible: plan.visible, matched: plan.matched }
+      })
+      log(`[webbridge] imported ${result.imported} missing turns for session ${sessionId} provider=${provider}`)
+      return { sessionId, provider, ...result, webUrl: web.url, syncedAt: new Date().toISOString() }
     },
     onReinstall: () => {
       for (const item of chatSessions) item.conversations.clear()
@@ -356,16 +363,12 @@ export function apply(ctx, config = {}) {
   const activation = writeActivation({ settings, ctx, driver, bridge, toolScope })
   log(`[webbridge] activated v${VERSION}: registry=${activation.registry?.count ?? '?'} driver=${driver.available}`)
 
-  // --- model providers -----------------------------------------------------
-  // Two routes, one adapter implementation. DeepSeek parses tool calls from the
-  // reply and lets DSH run them; ChatGPT executes tools itself through the MCP
-  // connector, so its route only forwards the prompt and reads the answer.
+  // --- model provider ------------------------------------------------------
+  // Nexus DSH supplies the full native MCP catalog in ChatGPT. Sending a
+  // second truncated text catalog would hide tools and conflict with it.
   if (settings.providers?.enabled !== false) {
     ctx.inject(['llm'], (scoped) => {
       const routes = [
-        { id: 'webbridge-deepseek', name: 'DeepSeek 网页版', site: 'deepseek', modelId: 'deepseek-web', withTools: true },
-        // Nexus DSH supplies the full native MCP catalog in ChatGPT. Sending a
-        // second truncated text catalog would hide tools and conflict with it.
         { id: 'webbridge-chatgpt', name: 'ChatGPT 网页版', site: 'chatgpt', modelId: 'chatgpt-web', withTools: false },
       ]
       const registered = []
@@ -382,7 +385,7 @@ export function apply(ctx, config = {}) {
             session: routeSession,
             settings: routeSettings,
             log,
-            parseReply: route.withTools ? parseReply : null,
+            parseReply: null,
             toolScope,
             contextStore,
             contextAvailable: () => bridge.catalog().some(tool => tool.name === CONTEXT_TOOL_NAME),

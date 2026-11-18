@@ -39,7 +39,7 @@ export class WebBridgeSetup {
       pluginInstalled: this.browser.saved.pluginInstalled === true, permissionsAll: this.browser.saved.permissionsAll === true,
       toolCount: this.bridge.status().exposed?.dsh?.length || 0,
       preferences: { ...this.preferences },
-      browser: { debugMode: Boolean(this.driver.debugMode), headless: this.driver.headless, profileDir: this.driver.profileDir },
+      browser: { debugMode: Boolean(this.driver.debugMode), headless: this.driver.headless, modeChangePending: Boolean(this.driver.modeChangePending), profileDir: this.driver.profileDir },
       accountTier: this.browser.saved.accountTier || 'unknown',
       models: this.models ? { count: this.models.catalog.length, checkedAt: this.models.checkedAt ? new Date(this.models.checkedAt).toISOString() : '' } : { count: 0, checkedAt: '' },
     }
@@ -62,7 +62,13 @@ export class WebBridgeSetup {
     Object.assign(this.job, { busy: true, action: command.action, stage: '等待浏览器空闲', error: '' })
     // Return immediately so settings polling stays responsive during browser work.
     this.pending = this.perform(command).then(() => {
-      this.job.stage = /login/.test(command.action) ? '登录成功，可以连接隧道' : command.action === 'disconnect' ? '隧道已断开' : command.action === 'save' ? '配置已加密保存' : '配置完成'
+      this.job.stage = /login/.test(command.action) ? '登录成功，可以连接隧道'
+        : command.action === 'disconnect' ? '隧道已断开'
+        : command.action === 'save' ? '配置已加密保存'
+        : command.action === 'setDebugMode' ? this.driver.modeChangePending
+          ? `已保存，当前网页任务结束后会自动切换为${command.debugMode ? '可见调试模式' : '无头模式'}`
+          : command.debugMode ? '调试模式已开启，下一次网页任务会显示浏览器窗口' : '调试模式已关闭，后续网页任务使用无头模式'
+        : '配置完成'
       this.job.completedAt = new Date().toISOString()
     }).catch(error => {
       this.job.error = this.tunnel.redact(error.message)

@@ -57,5 +57,18 @@ try {
   assert.equal(await page.evaluate(() => Boolean(window.deleted)), false)
   await page.setContent('<div role="dialog"><button type="submit">Create</button><button type="submit">Create another</button></div>')
   await assert.rejects(() => controls.submit('提交测试'), error => error.code === 'setup-ui-changed')
-  console.log('SETUP_CONTROLS_SMOKE_OK: English creation, internal option IDs, scoped submissions, and ambiguous-control rejection')
+
+  for (const label of ['Create tunnel', 'Create a tunnel', 'New tunnel', '新建隧道']) {
+    await page.setContent(`<main><button type="button" onclick="document.querySelector('[role=dialog]').hidden=false">${label}</button>
+      <button type="button" onclick="window.unrelatedClicked=true">Unrelated</button></main>
+      <div role="dialog" hidden><input placeholder="Tunnel name"></div>`)
+    await controls.primaryDialog('打开隧道创建表单')
+    assert.equal(await page.locator('[role="dialog"]').isVisible(), true, label)
+    assert.notEqual(await page.evaluate(() => window.unrelatedClicked), true, label)
+  }
+  await page.setContent('<main><button>Create tunnel</button><button>New tunnel</button></main>')
+  await assert.rejects(() => controls.primaryDialog('打开隧道创建表单'), error => error.code === 'setup-ui-changed')
+  await page.setContent('<main><p>Tunnels access required</p></main>')
+  await assert.rejects(() => controls.primaryDialog('打开隧道创建表单'), error => error.code === 'setup-tunnel-permission')
+  console.log('SETUP_CONTROLS_SMOKE_OK: tunnel button variants, permissions, internal option IDs, scoped submissions, and ambiguity rejection')
 } finally { await driver.stop(); await rm(root, { recursive: true, force: true }) }

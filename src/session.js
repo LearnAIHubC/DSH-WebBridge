@@ -4,6 +4,7 @@ import { readReplyState, waitForReply } from './detect.js'
 import { SITE_PRESETS } from './config.js'
 import { uploadProblem } from './attachments.js'
 import { randomUUID } from 'node:crypto'
+import { buildConversationReadExpression } from './conversation-sync.js'
 
 /**
  * One browser chat at a time, on purpose.
@@ -62,41 +63,6 @@ export class ChatSession {
     return this.authGate(await this.driver.state(), this.adapter(site).inputSelector)
   }
 
-  /**
-   * Some sites keep the page usable but silence the account (DeepSeek shows
-   * "你的账号已被禁言至 …"), which removes the composer entirely. Without this
-   * check the failure surfaces as "selector 没有匹配元素" and looks like a
-   * broken adapter instead of an account restriction.
-   */
-  async assertNotRestricted(site, options = {}) {
-    const selector = this.adapter(site).inputSelector
-    if (!selector || typeof this.driver.eval !== 'function') return
-    // Only pay for the extra round trip when the composer is actually missing.
-    let hasComposer = false
-    try {
-      const probe = await this.driver.eval(`(() => Boolean(document.querySelector(${JSON.stringify(selector)})))()`, {
-        signal: options.signal,
-      })
-      hasComposer = probe?.result === true
-    } catch {
-      return
-    }
-    if (hasComposer) return
-    const expression = `(() => {
-      const text = (document.body && document.body.innerText) || '';
-      const hit = text.match(/(账号已被禁言[^\\n]{0,40}|已被禁言[^\\n]{0,40}|违反用户使用规范[^\\n]{0,60}|账号已被封禁[^\\n]{0,40})/);
-      return hit ? hit[1] : null;
-    })()`
-    let hit = null
-    try {
-      const raw = (await this.driver.eval(expression, { signal: options.signal }))?.result
-      hit = typeof raw === 'string' && raw.trim() ? raw.trim() : null
-    } catch {}
-    if (hit) {
-      throw new BridgeError('account-restricted', `${this.sitePreset(site).label} account is restricted: ${hit}`)
-    }
-  }
-
   /** Refuse to act on a login/verification page 鈥?this is a hard rule. */
   async authGate(state, inputSelector) {
     // Sites also show short-lived interstitials ("Just a moment…", bot checks)
@@ -132,9 +98,8 @@ export class ChatSession {
   }
 
   /**
-   * Make sure the site's reasoning toggle is ON before asking.
-   * DeepSeek keeps 娣卞害鎬濊€?as a per-conversation switch that resets on a new
-   * chat, so this is checked (and clicked) on every send rather than once.
+   * Apply the requested reasoning mode before asking. The control is checked on
+   * every send because it can change with the selected web model or conversation.
    * A failure here must never block the actual message.
    */
   async ensureReasoning(adapter, signal, mode = 'on') {
@@ -205,27 +170,16 @@ export class ChatSession {
     }
     if (!options.webModel) await this.ensureReasoning(adapter, options.signal, options.reasoning || 'on')
     if (options.watchId && this.driver.startGenerationWatch) await this.driver.startGenerationWatch(options.watchId, { signal: options.signal })
-    // Older saved ChatGPT calibrations used an empty sendSelector (Enter).
+    // Older saved ChatGPT calibrations used an empty sendSelector. Fall back to
+    // the current built-in ChatGPT selector rather than submitting with Enter.
     const sendSelector = adapter.sendSelector || this.sitePreset(site).adapter.sendSelector
-    let clicked = false
-    if (sendSelector) {
-      try {
-        await this.driver.click(sendSelector, { signal: options.signal })
-        clicked = true
-      } catch (err) {
-        if (site === 'chatgpt') throw err
-        this.log(`[webbridge] send button failed (${err.code}), falling back to Enter`)
-      }
-    }
-    if (!clicked) await this.driver.press('Enter', { signal: options.signal })
+    await this.driver.click(sendSelector, { signal: options.signal })
     const delivery = {
       submittedText: text,
       contextAttachmentDelivered: prepared.contextAttachmentDelivered === true,
       contextAttachmentSkipped: prepared.contextAttachmentSkipped === true,
       conversationReset: prepared.reset === true,
     }
-    if (site !== 'chatgpt') return { ...delivery, uploadLease: prepared.lease }
-
     const expression = `(() => {
       const editors = Array.from(document.querySelectorAll(${JSON.stringify(adapter.inputSelector)}))
         .filter((node) => node.checkVisibility({ checkOpacity: true, checkVisibilityCSS: true }));
@@ -356,8 +310,6 @@ export class ChatSession {
           await this.driver.updateSessionInfo?.(key, { ...known, userTurnKey: '', title: '' })
         }
       }
-      await this.assertNotRestricted(site, options)
-
       // The provider can choose a full snapshot or a continuation only after
       // this method has selected the actual web conversation. Page hydration
       // and restoring the same URL do not themselves invalidate context.
@@ -394,7 +346,7 @@ export class ChatSession {
       // turn as the baseline so its old answer cannot satisfy this request.
       if (!baseline.userTurnKey && known?.userTurnKey) baseline.userTurnKey = known.userTurnKey
       const started = Date.now()
-      watchId = site === 'chatgpt' ? randomUUID() : undefined
+      watchId = randomUUID()
       const submitted = await this.submit(text, site, adapter, {
         ...sendOptions, baseline, watchId, selectPlugin: Boolean(adapter.pluginName && !known?.url),
         onConversationReset: async ({ reason }) => {
@@ -587,6 +539,50 @@ export class ChatSession {
     }
   }
 
+  /** Inspect the web chat mapped to one DSH session; never create or switch chats. */
+  async readConversation(options = {}) {
+    const site = options.site || this.settings.site
+    const sessionKey = String(options.sessionKey || '').trim()
+    if (!sessionKey) throw new BridgeError('session-required', '读取网页消息需要当前 DSH sessionId。')
+    const key = site + ':' + sessionKey
+    return this.enqueue(async () => {
+      const preset = this.sitePreset(site)
+      const known = this.conversations.get(key) || await this.driver.getSessionInfo?.(key)
+      const url = String(known?.url || '')
+      if (!persistedConversationURL(site, url, preset.url) ||
+          new URL(url).origin !== new URL(preset.url).origin) {
+        throw new BridgeError('sync-no-conversation', '当前本地会话没有已关联的 ChatGPT 网页对话，未执行同步。')
+      }
+      try {
+        const current = await this.driver.state()
+        if (current?.url !== url) await this.driver.open(url, { signal: options.signal })
+        await this.authGate(await this.driver.state(), this.adapter(site).inputSelector)
+        let read
+        const expected = new URL(url)
+        for (let attempt = 0; attempt < 16; attempt++) {
+          read = (await this.driver.eval(buildConversationReadExpression(), { signal: options.signal }))?.result
+          const actual = new URL(String(read?.url || 'about:blank'))
+          if (actual.origin !== expected.origin || actual.pathname !== expected.pathname) {
+            throw new BridgeError('sync-conversation-changed', '网页跳转到了另一段对话，未修改本地会话。')
+          }
+          if (read?.streaming) throw new BridgeError('sync-web-busy', '网页正在生成回复，请结束后再同步。')
+          if (Array.isArray(read?.messages) && read.messages.length) break
+          await new Promise(resolve => setTimeout(resolve, 300))
+        }
+        if (!Array.isArray(read?.messages) || !read.messages.length) {
+          throw new BridgeError('sync-no-messages', '网页未加载出完整的对话内容，未修改本地会话。')
+        }
+        const replyState = await readReplyState(this.driver, this.adapter(site), options.signal)
+        if (replyState?.streaming || replyState?.requestActive) {
+          throw new BridgeError('sync-web-busy', '网页正在生成回复，请结束后再同步。')
+        }
+        return { ...read, site, url }
+      } finally {
+        await this.driver.releasePage?.(key)
+      }
+    }, key)
+  }
+
   async newChat(options = {}) {
     const queueKey = options.sessionKey ? `${options.site || this.settings.site}:${options.sessionKey}` : this.sessionId
     return this.enqueue(async () => {
@@ -617,9 +613,9 @@ function safeHost(url) {
   }
 }
 
-function persistedConversationURL(site, value, root) {
+function persistedConversationURL(_site, value, root) {
   const url = String(value || '')
   if (!url || url === root) return false
-  return site !== 'chatgpt' || /\/c\//.test(url) && !/\/c\/(?:local-chatgpt|local_)/i.test(decodeURIComponent(url))
+  return /\/c\//.test(url) && !/\/c\/(?:local-chatgpt|local_)/i.test(decodeURIComponent(url))
 }
 

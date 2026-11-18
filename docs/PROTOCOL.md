@@ -1,13 +1,11 @@
 # 提示词与工具契约（可选实验特性）
 
-> **先说清楚定位**：DeepSeek 网页版没有 MCP，所以**主线永远是 DOM 直读**——
-> 填输入框 → 等回复 → 读 `.ds-assistant-message-main-content` 的文本。
-> 这份文档描述的"工具回环"是**可选实验特性**（`webbridge_agent`），默认不暴露给 MCP，
-> 失败时应当直接降级为普通问答，不要影响主线。
+> 这份文档只描述可选实验工具 `webbridge_agent` 的文本工具回环，默认不暴露给 MCP。
+> 当前 `webbridge-chatgpt` 模型主线使用 ChatGPT 原生 MCP，不经过这套文本协议；实验回环失败时
+> 应直接结束并返回可诊断结果，不能影响 ChatGPT provider 的正常问答。
 >
-> 另外，这套协议是**本项目自己的适配层**，不是 Nexus 的做法：Nexus 完全走标准 MCP
-> 工具 schema + 客户端原生 function calling（`apps/bridge/src/server.ts:515-600`），
-> 全仓库只有一处给 web 模型发提示词（`apps/bridge/src/browser-portal.ts:1704`，Reader 用途）。
+> 这套协议是本项目自己的兼容层。Nexus DSH 的正式路径使用标准 MCP 工具 schema 与客户端原生
+> function calling；两条路径不要混用。
 
 网页版聊天**没有原生 function calling**。所以模式 A+ 的本质是：用一段明确的文本协议，让网页模型"假装"有工具，再由插件解析并执行。
 
@@ -45,13 +43,8 @@
 
 ## 2. 模型侧输出契约
 
-> **实测警告（2026-11-16，DeepSeek 网页版）**：即使提示词明确要求 `<<<TOOL_CALLS>>>`，模型仍会用它自己的方言。实测出现过三种：
->
-> 1. `<tool_call>{"name":"x","arguments":{...}}</tool_call>`（Qwen/ChatGPT 风格）
-> 2. DeepSeek 内部 DSML：`<｜｜DSML｜｜ invoke name="x"><｜｜DSML｜｜ parameter name="k" string="true">v</…>`
-> 3. 纯文本复述（不调工具）
->
-> 所以 `src/agent.js` 的解析器**按结构而非标记解析**：定界符 → `<tool_call>` → DSML invoke/parameter → fenced JSON → 裸 JSON（只认含 name+arguments 的对象）。新增一种方言时，加一个提取器 + 一条 smoke 用例即可。
+> 模型不一定严格遵守定界符。`src/agent.js` 依次接受项目定界符、`<tool_call>`、
+> fenced JSON 和裸 JSON；只有包含工具名与参数的对象才会被当成调用。纯文本不会执行为代码。
 
 模型每次只允许输出**两种东西之一**，且必须带定界符：
 

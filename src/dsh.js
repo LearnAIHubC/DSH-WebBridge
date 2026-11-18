@@ -57,6 +57,7 @@ export function nativeToolDeclaration(call, position) {
 
 export function createToolScope(ctx, log = () => {}, { contextStore } = {}) {
   let agentsService = null
+  let sessionsService = null
   let attachmentService = null
   let workingDirectoryService = null
   const attachmentMessages = new Map()
@@ -158,6 +159,7 @@ export function createToolScope(ctx, log = () => {}, { contextStore } = {}) {
     } catch (err) {
       log(`[webbridge] agents injection unavailable: ${err.message}`)
     }
+    ctx.inject(['sessions'], scoped => { sessionsService = scoped.sessions })
     ctx.inject(['attachments'], scoped => { attachmentService = scoped.attachments })
     try {
       ctx.inject(['workingDirectory'], scoped => { workingDirectoryService = scoped.workingDirectory })
@@ -345,6 +347,31 @@ export function createToolScope(ctx, log = () => {}, { contextStore } = {}) {
     get hasActiveRequests() { return requests.size > 0 },
     isSessionActive(sessionId) {
       return [...requests.values()].some(id => String(id) === String(sessionId))
+    },
+    /** Serialize a history repair with the owning idle agent and flush its log. */
+    async withSessionMaintenance(sessionId, operation) {
+      const id = String(sessionId || '').trim()
+      const agent = agents().find(entry => String(entry.id) === id || String(entry.session?.id) === id)
+      if (!agent) throw new BridgeError('session-not-found', '当前 DSH 会话未运行，无法安全写入本地记录。')
+      if (agent.status !== 'idle' || typeof agent.runMaintenance !== 'function') {
+        throw new BridgeError('session-busy', '本地会话正在运行，请等待本轮结束后再同步。')
+      }
+      if (agent.inbox?.nextTurn?.length || agent.inbox?.nextStep?.length) {
+        throw new BridgeError('session-has-pending-input', '本地会话还有待处理的消息，请先处理再同步。')
+      }
+      if (typeof agentsService?.turnBoundaryOf !== 'function' ||
+          typeof sessionsService?.flush !== 'function') {
+        throw new BridgeError('session-sync-unavailable', '当前 DSH 会话服务不支持可靠写入和持久化。')
+      }
+      return agent.runMaintenance(async signal => {
+        if (signal.aborted) throw new BridgeError('aborted', '同步已取消。')
+        const result = await operation({
+          session: agent.session,
+          boundary: agentsService.turnBoundaryOf(agent.session),
+        })
+        await sessionsService.flush(agent.session)
+        return result
+      })
     },
     resetSession(sessionId) {
       const id = String(sessionId || '').trim()

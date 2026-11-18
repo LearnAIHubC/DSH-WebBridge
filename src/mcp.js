@@ -41,7 +41,7 @@ export class McpBridge {
         description: 'Send one message to the local signed-in web chat and wait for the complete reply.',
         parameters: {
           message: { type: 'string', required: true, description: 'Message to type into the chat input.' },
-          site: { type: 'string', description: 'Site key: chatgpt or deepseek.' },
+          site: { type: 'string', description: 'Site key: chatgpt.' },
           timeoutMs: { type: 'number', description: 'Optional reply wait budget in milliseconds. Zero means unlimited (default).' },
         },
       },

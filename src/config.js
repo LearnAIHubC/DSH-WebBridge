@@ -21,7 +21,7 @@ export const DEFAULTS = {
   debugMode: false,
   chromeVersion: '157.0.8103.52',
   fingerprint: defaultFingerprint(),
-  site: 'deepseek',
+  site: 'chatgpt',
 
   /** Reply completion detection. Zero waits until the reply finishes or is stopped. */
   replyTimeoutMs: 0,
@@ -88,24 +88,6 @@ export const SITE_PRESETS = {
     newChatShortcut: process.platform === 'darwin' ? 'Meta+Shift+KeyO' : 'Control+Shift+KeyO',
     readTitle: true,
   },
-  deepseek: {
-    label: 'DeepSeek',
-    url: 'https://chat.deepseek.com/',
-    adapter: {
-      inputSelector: 'textarea',
-      sendSelector: '',
-      messageSelector: '.ds-assistant-message-main-content',
-      streamingSelector: '',
-      newChatSelector: '',
-      reasoning: {
-        selector: 'div.ds-toggle-button',
-        text: '深度思考',
-        selectedClass: 'ds-toggle-button--selected',
-      },
-      verified: true,
-      notes: 'Verified on chat.deepseek.com. Enter sends. The chat renders through a virtual list, so older assistant nodes leave the DOM — never count messages to detect completion.',
-    },
-  },
 }
 
 export function resolveSettings(config = {}) {
@@ -118,6 +100,10 @@ export function resolveSettings(config = {}) {
     mcp: { ...DEFAULTS.mcp, ...(config.mcp || {}) },
     tunnel: { ...DEFAULTS.tunnel, ...(config.tunnel || {}) },
   }
+  // Older installations may still persist `site: deepseek`. The site is no
+  // longer supported, so migrate stale configuration to the only available
+  // preset instead of leaving the plugin unable to start.
+  if (!SITE_PRESETS[merged.site]) merged.site = DEFAULTS.site
   merged.browserProfileDir = expandHome(merged.browserProfileDir)
   merged.browserExecutablePath = expandHome(merged.browserExecutablePath)
   merged.adapterDir = expandHome(merged.adapterDir)

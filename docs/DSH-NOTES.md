@@ -61,13 +61,3 @@ Host 插件没有好用的控制台，且**不能在本会话调用自己刚注�
 ```
 
 这是唯一可靠的"插件真的加载了吗"证据。插件重载用 `plugin_manager set_bundle` 关→开。
-
-## 6. 网页端模型的工具调用方言（DeepSeek 实测）
-
-即使提示词要求 `<<<TOOL_CALLS>>>`，DeepSeek 仍会输出自己的格式，实测三种：
-
-1. `<tool_call>{"name":...,"arguments":{...}}</tool_call>`
-2. DSML：`<｜｜DSML｜｜ invoke name="x"><｜｜DSML｜｜ parameter name="k" string="true">v</…>`
-3. 纯文本
-
-解析必须**按结构**（`invoke name=` / `parameter name=`），不能按标记字符。

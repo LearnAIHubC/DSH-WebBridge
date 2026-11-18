@@ -109,13 +109,13 @@ function SessionSyncButton({ directory, loadDirectory, syncSession }) {
     if (pending) return
     setPending(true); setResult(''); setError('')
     try {
-      await syncSession(provider)
-      setResult('已同步')
+      const value = await syncSession(provider)
+      setResult(value.imported ? `已补齐 ${value.imported} 条` : '无缺失消息')
     } catch (reason) { setError(reason?.message || String(reason)) }
     finally { setPending(false) }
   }
   const label = pending ? '同步中' : error ? '重试' : result || '同步'
-  const title = error || '重新同步当前 DSH 会话、网页会话和 MCP 上下文。下一条消息会重新加载完整上下文。'
+  const title = error || '读取当前会话关联的 ChatGPT 网页消息，只将本地缺少的后续消息补齐，不重建网页会话。'
   return h(React.Fragment, null,
     h('style', null, '@keyframes wb-sync-spin{to{transform:rotate(360deg)}}'),
     h('button', { type: 'button', onClick: run, disabled: pending, title, 'aria-label': error ? `同步失败：${error}` : '同步网页会话',
@@ -181,7 +181,11 @@ function SettingsSection({ read, execute, debug }) {
         if (!loaded.current) {
           loaded.current = true
           setForm(value => ({ ...value, ...next.preferences, tunnelId: next.tunnel.tunnelId, networkMode: next.tunnel.networkMode, customProxy: next.tunnel.customProxy, healthPort: next.tunnel.healthPort, autoReconnect: next.tunnel.autoReconnect, debugMode: next.browser?.debugMode === true }))
-        } else if (next.tunnel.tunnelId) setForm(value => value.tunnelId ? value : { ...value, tunnelId: next.tunnel.tunnelId })
+        } else setForm(value => ({
+          ...value,
+          debugMode: next.browser?.debugMode === true,
+          ...(next.tunnel.tunnelId && !value.tunnelId ? { tunnelId: next.tunnel.tunnelId } : {}),
+        }))
       } catch (reason) { if (mounted.current) setError(reason.message || String(reason)) }
       finally { reading = false }
     }
@@ -212,6 +216,11 @@ function SettingsSection({ read, execute, debug }) {
     h('input', { type: options.type || 'text', value: form[key], disabled: busy, autoComplete: options.type === 'password' ? 'new-password' : 'off', placeholder: options.placeholder || '', onChange: event => change(key, options.type === 'number' ? Number(event.target.value) : event.target.value) }),
     options.help && h('small', null, options.help))
   const connected = state?.tunnel.status === 'connected'
+  const debugModeDescription = state?.browser?.modeChangePending
+    ? `切换已保存，当前网页任务结束后会自动进入${form.debugMode ? '可见调试模式' : '无头模式'}。`
+    : form.debugMode
+      ? '已开启；执行网页任务时显示窗口，历史会话按需打开。'
+      : '已关闭；网页任务使用无头模式，历史会话按需打开。'
   return h('section', { ref: section, className: 'wb-settings', 'data-webbridge-settings': true }, h('style', null, css),
     h('h1', null, 'ChatGPT 网页版'),
     h('div', { className: 'wb-tabs', role: 'tablist' }, ...[['overview', '概览'], ['tunnel', '隧道与 API Key'], ['advanced', '高级设置'], ['debug', '浏览器调试']].map(([value, label]) => h('button', { key: value, role: 'tab', 'aria-selected': tab === value, onClick: () => setTab(value) }, label))),
@@ -237,7 +246,7 @@ function SettingsSection({ read, execute, debug }) {
       form.networkMode === 'custom' && field('customProxy', '代理地址', { placeholder: 'http://127.0.0.1:7897' }),
       toggle('autoReconnect', '断线自动重连', 'DSH 启动后恢复隧道，断线后自动重试。'),
       toggle('autoRefreshTools', '自动刷新工具', '检测 DSH 工具变化，等待当前网页会话完成后更新。'),
-      toggle('debugMode', '浏览器调试模式', '开启后，执行网页任务时显示窗口；历史会话按需打开。切换时需等待当前网页请求结束。'),
+      toggle('debugMode', '浏览器调试模式', debugModeDescription),
       field('healthPort', '健康检查端口', { type: 'number' }),
       field('workspaceId', 'ChatGPT 工作区 ID（可选）', { help: '只有一个工作区时自动选择；有多个工作区时填写目标 ID。' }),
       field('projectName', 'OpenAI 项目名称'),

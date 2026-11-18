@@ -60,8 +60,7 @@ src/
 ├─ adapters/
 │  ├─ index.ts         # adapter 加载/保存（~/.dsh/webbridge/adapters/<domain>.json）
 │  ├─ generic.ts       # 配置化选择器（默认）
-│  ├─ chatgpt.ts       # 预设
-│  └─ deepseek.ts      # 预设
+│  └─ chatgpt.ts       # 预设
 ├─ tools/
 │  ├─ status.ts        # webbridge_status
 │  ├─ open.ts          # webbridge_open

@@ -1,11 +1,8 @@
 /**
- * Web-chat model providers for DSH.
+ * ChatGPT web model provider for DSH.
  *
- * Two routes share one implementation, differing in how tool calls are executed:
- *
- *   webbridge-deepseek  prompt -> web chat -> we parse tool calls -> DSH runs them
- *   webbridge-chatgpt   prompt -> web chat -> ChatGPT calls our MCP endpoint,
- *                       which executes DSH tools synchronously on its side
+ * The provider forwards the prompt to ChatGPT. Native MCP calls execute DSH
+ * tools synchronously through the local bridge and remain visible in DSH.
  *
  * Chunk vocabulary (measured from @deepseek-ai/dsh-llm BlockAssembler):
  *   {type:'block-start', index, blockType:'text'|'reasoning'|'tool-call'}
@@ -218,22 +215,20 @@ export class WebChatAdapter {
     return state
   }
 
-  /**
-   * Force one DSH session onto a fresh web conversation. The next provider
-   * request therefore sends a full DSH context snapshot and cannot reuse an
-   * in-memory incremental cursor left behind by a failed/restarted exchange.
-   */
+  /** Read the existing mapped web conversation without resetting its cursor. */
   async syncSession(sessionId) {
     const id = String(sessionId || '').trim()
     if (!id) throw new BridgeError('session-required', '同步网页会话需要当前 DSH sessionId。')
-    const result = await this.session.newChat({ site: this.settings.site, sessionKey: id })
-    this.sessionState.delete(id)
-    return {
-      sessionId: id,
-      provider: this.providerId,
-      site: this.settings.site,
-      conversation: result?.conversation || null,
-    }
+    return this.session.readConversation({ site: this.settings.site, sessionKey: id })
+  }
+
+  /** Imported user turns were already delivered on the same web conversation. */
+  noteSynchronized(sessionId, messages) {
+    const state = this.sessionState.get(String(sessionId))
+    if (!state?.bootstrapped) return
+    const users = messages.filter(message => directUserMessage(message))
+    state.sentMessages = users.length
+    state.sentUserKeys = users.map(message => `${message.id || ''}:${digest(message.content)}`)
   }
 
   providerInfo(provider) {

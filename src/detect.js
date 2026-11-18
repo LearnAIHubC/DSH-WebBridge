@@ -49,9 +49,8 @@ export async function readReplyState(driver, adapter, signal) {
  * Wait until the assistant finishes a reply.
  *
  * Completion is judged by TEXT CHANGE plus stability, not by counting messages.
- * DeepSeek chat renders through a virtual list: older messages are removed from
- * the DOM, so the assistant-node count can stay at 1 (or even shrink) across a
- * new reply. A count-based detector would hang there forever.
+ * Web chats can virtualize older rows, so the assistant-node count may stay at 1
+ * or even shrink across a new reply. A count-only detector would hang forever.
  *
  * Votes:
  *   1. reached — the last assistant text changed from the pre-send baseline, or

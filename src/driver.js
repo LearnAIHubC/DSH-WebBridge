@@ -50,6 +50,8 @@ export class BrowserDriver {
     this.debugMode = Boolean(settings.debugMode)
     this.active = 0
     this.lastMode = null
+    this.modeChangePending = false
+    this.modeChangePromise = null
     this.generations = new Map()
     this.diagnostics = new BrowserDiagnostics()
   }
@@ -57,7 +59,7 @@ export class BrowserDriver {
   get busy() { return this.active > 0 }
   get available() { return Boolean(this.executablePath) }
   get profileDir() { return this.settings.browserProfileDir || join(homedir(), '.dsh', 'webbridge', 'chrome-profile') }
-  get headless() { return !this.debugMode && !this.lastMode?.headed }
+  get headless() { return this.context && this.lastMode ? !this.lastMode.headed : !this.debugMode }
 
   get executablePath() {
     const explicit = this.settings.browserExecutablePath || process.env.CHROME_PATH
@@ -100,14 +102,15 @@ export class BrowserDriver {
 
   async setDebugMode(enabled) {
     await this.loadRegistry()
-    if (this.busy) throw new BridgeError('browser-busy', '浏览器正在处理会话，请等当前请求结束后再切换调试模式。')
     this.debugMode = Boolean(enabled)
     await mkdir(this.stateDir, { recursive: true })
     await writeFile(this.modePath, JSON.stringify({ debugMode: this.debugMode, updatedAt: new Date().toISOString() }, null, 2), { mode: 0o600 })
-    const reopen = this.context !== null
-    if (reopen) await this.closeContext()
+    const hasRuntime = Boolean(this.context || this.contextPromise)
+    const runtimeMatches = !this.contextPromise && this.lastMode?.headed === this.debugMode
+    this.modeChangePending = hasRuntime && !runtimeMatches
+    if (this.modeChangePending && !this.busy && !this.generations.size) await this.flushModeChange()
     // The next browser task applies the mode; saved conversations stay closed.
-    return { debugMode: this.debugMode, headless: !this.debugMode, restarted: false }
+    return { debugMode: this.debugMode, headless: this.headless, restarted: false, pending: this.modeChangePending }
   }
 
   async ensureContext(forceHeaded = false) {
@@ -222,15 +225,16 @@ export class BrowserDriver {
   exclusive(operation, sessionKey = DEFAULT_SESSION) {
     const key = String(sessionKey || DEFAULT_SESSION)
     const previous = this.queues.get(key) || Promise.resolve()
-    const run = previous.then(async () => {
+    const execute = async () => {
+      if (this.modeChangePromise) await this.modeChangePromise
       this.active++
       try { return await this.storage.run(key, operation) }
-      finally { this.active-- }
-    }, async () => {
-      this.active++
-      try { return await this.storage.run(key, operation) }
-      finally { this.active-- }
-    })
+      finally {
+        this.active--
+        if (!this.active && this.modeChangePending) await this.flushModeChange()
+      }
+    }
+    const run = previous.then(execute, execute)
     this.queues.set(key, run.catch(() => {}))
     return run
   }
@@ -404,11 +408,31 @@ export class BrowserDriver {
     })()`) } finally { if (this.generations.get(this.currentKey()) === id) this.generations.delete(this.currentKey()) }
   }
   async waitLogin(timeoutMs, options = {}) { const end = Date.now() + timeoutMs; while(Date.now() < end) { const s = await this.state(); if(s.authenticated) return s; if (options.signal?.aborted) throw new BridgeError('aborted', '等待登录已取消。'); await sleep(1000) } throw new BridgeError('manual-auth-timeout','等待登录超时。') }
+  async flushModeChange() {
+    if (!this.modeChangePending || this.busy || this.generations.size) return false
+    if (this.modeChangePromise) return this.modeChangePromise
+    const change = (async () => {
+      if (this.contextPromise) await this.contextPromise.catch(() => {})
+      if (this.busy || this.generations.size) return false
+      const mismatch = Boolean(this.context) && this.lastMode?.headed !== this.debugMode
+      if (!mismatch) { this.modeChangePending = false; return false }
+      await this.closeContext()
+      return true
+    })()
+    const tracked = change.finally(() => { if (this.modeChangePromise === tracked) this.modeChangePromise = null })
+    this.modeChangePromise = tracked
+    return tracked
+  }
   async switchToHeadless({ allowCurrentOperation = false } = {}) {
-    if (this.debugMode || !this.lastMode?.headed) return { changed: false, headless: !this.lastMode?.headed }
+    if (this.debugMode || !this.lastMode?.headed) return { changed: false, headless: this.headless, pending: this.modeChangePending }
+    this.modeChangePending = true
     if (this.active > (allowCurrentOperation ? 1 : 0) || this.generations.size) return { changed: false, headless: false, pending: true }
-    await this.closeContext()
-    return { changed: true, headless: true }
+    if (allowCurrentOperation && this.active === 1) {
+      await this.closeContext()
+      return { changed: true, headless: true, pending: false }
+    }
+    const changed = await this.flushModeChange()
+    return { changed, headless: this.headless, pending: this.modeChangePending }
   }
   async stop() { await this.persistRegistry(); await this.closeContext(); return { ok: true } }
   async closeContext() {
@@ -419,6 +443,7 @@ export class BrowserDriver {
     this.pages.clear()
     this.lastMode = null
     this.generations.clear()
+    this.modeChangePending = false
   }
   async dispose() { this.disposed = true; await this.stop() }
 }

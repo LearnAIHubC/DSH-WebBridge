@@ -51,7 +51,33 @@ export class SetupControls {
     const page = await this.page()
     const main = page.locator('main, [role="main"]').filter({ visible: true })
     const root = await main.count() === 1 ? main : page.locator('body')
-    await this.click('button[aria-haspopup="dialog"], button:has(svg use[href*="plus"])', purpose, { root })
+    const tunnel = purpose === '打开隧道创建表单'
+    const accessError = async () => {
+      if (!tunnel) return null
+      if (/\/login(?:\/|$)/.test(new URL(page.url()).pathname)) return new BridgeError('manual-auth-required', 'OpenAI Platform 尚未登录，请在浏览器完成登录后重试。')
+      const notice = await page.locator('body').innerText({ timeout: 2000 }).catch(() => '')
+      if (/tunnels access required|(?:no|insufficient|missing) (?:access|permission).*tunnel|(?:无权|没有权限|缺少权限).*隧道/i.test(notice)) {
+        return new BridgeError('setup-tunnel-permission', '当前 Platform 组织未开放隧道管理权限。请让组织管理员授予 Tunnels Read + Manage，或填入已有的 Tunnel ID 和 Runtime API Key。')
+      }
+      return null
+    }
+    const blocked = await accessError()
+    if (blocked) throw blocked
+    let buttons = root.locator('button[aria-haspopup="dialog"], button:has(svg use[href*="plus"])')
+    if (tunnel) {
+      // Platform may render a labeled creation button without a dialog hint or plus sprite.
+      buttons = buttons.or(root.getByRole('button', { name: /^(?:create|new|add)(?: (?:a|an))? (?:secure |mcp )?tunnel$|^(?:创建|新建|添加)(?:安全 |MCP )?隧道$/i }))
+    }
+    const visible = buttons.filter({ visible: true })
+    try { await visible.first().waitFor({ state: 'visible', timeout: 10000 }) }
+    catch {
+      const error = await accessError()
+      if (error) throw error
+      throw new BridgeError('setup-ui-changed', `${purpose}：预期 1 个控件，实际 0 个（${new URL(page.url()).pathname}）。请确认页面已加载、账号具有创建权限，或检查页面结构。`)
+    }
+    const count = await visible.count()
+    if (count !== 1) throw new BridgeError('setup-ui-changed', `${purpose}：预期 1 个控件，实际 ${count} 个（${new URL(page.url()).pathname}）。尚未执行此步骤。`)
+    await visible.click({ timeout: 10000 })
   }
   async chooseOptions(ids, { text, single = false } = {}) {
     const page = await this.page()

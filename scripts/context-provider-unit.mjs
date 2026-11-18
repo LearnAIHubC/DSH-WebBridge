@@ -183,14 +183,12 @@ test('a scoped rule changing A to B and back to A still refreshes with deltas', 
   assert.deepEqual(sent[2].data.messages.map(entry => entry.message), [reverted])
 })
 
-test('a new conversation loads full context and restores earlier user attachments', async () => {
+test('web conversation reset restores full context and earlier user attachments', async () => {
   const { adapter, sent } = fixture({ steps: [{}, {}, { newConversation: true }] })
   const upload = { ...user('file', '请分析这个文件'), content: [{ type: 'text', text: '请分析这个文件' }, { type: 'file', attachment: { attachmentId: 'file-id', name: 'design.txt' } }] }
   await collect(adapter, { sessionId: 'main', messages: [upload] })
   await collect(adapter, { sessionId: 'main', messages: [upload, user('followup', '继续分析')] })
-  adapter.session.newChat = async () => ({ conversation: { newConversation: true } })
-  await adapter.syncSession('main')
-  await collect(adapter, { sessionId: 'main', messages: [upload, user('followup', '继续分析')] })
+  await collect(adapter, { sessionId: 'main', messages: [upload, user('followup', '继续分析'), user('third', '还有问题')] })
   assert.deepEqual(sent[0].attachments, [{ path: '/attachments/file-id', name: 'design.txt' }])
   assert.equal(sent[0].attachment, null)
   assert.deepEqual(sent[1].attachments, [])
@@ -200,7 +198,7 @@ test('a new conversation loads full context and restores earlier user attachment
   assert.equal(sent[2].attachment, null)
   assert.equal(sent[2].pages[0].mode, 'full')
   assert.deepEqual(sent[2].attachments, sent[0].attachments)
-  assert.equal(sent[2].data.messages.length, 2)
+  assert.equal(sent[2].data.messages.length, 3)
 })
 
 test('submission does not mark context delivered when the model skips initialization', async () => {
@@ -286,9 +284,9 @@ test('auxiliary and title requests do not publish or modify main-session context
   assert.equal(store.latestReference('main'), null)
 })
 
-test('legacy TXT quota skip is not mistaken for completed context delivery', async () => {
+test('compatibility TXT quota skip is not mistaken for completed context delivery', async () => {
   const { adapter, sent } = fixture({
-    adapter: { settings: { site: 'deepseek', providers: {} }, parseReply: text => ({ kind: 'final', text }) },
+    adapter: { settings: { site: 'chatgpt', providers: {} }, parseReply: text => ({ kind: 'final', text }) },
     steps: [{ contextAttachmentDelivered: false }, { contextAttachmentDelivered: true }],
   })
   const system = { role: 'system', content: '保留系统规则' }

@@ -15,11 +15,9 @@ const FINAL_CLOSE = '<<<END_FINAL>>>'
 /**
  * Extract the final answer or the tool calls from one model reply.
  *
- * Models do not share one tool-call dialect. The measured DeepSeek behaviour was
- * `<tool_call>{"name":...,"arguments":{...}}</tool_call>` even when the prompt
- * asked for `<<<TOOL_CALLS>>>`, so parsing accepts, in order:
+ * Models do not share one tool-call dialect, so parsing accepts, in order:
  *   1. our explicit delimiters
- *   2. <tool_call> blocks (DeepSeek / Qwen style)
+ *   2. <tool_call> blocks
  *   3. a fenced ```json block holding an array or object
  *   4. a bare JSON array/object that actually carries name + arguments
  * A reply with no call markers is returned as `text`: the loop decides whether
@@ -58,12 +56,6 @@ function extractCalls(raw) {
   const fenced = raw.match(/```(?:json|JSON)?\s*([\s\S]*?)```/g) || []
   for (const block of fenced) blocks.push(block.replace(/```(?:json|JSON)?/g, '').replace(/```/g, ''))
 
-  // DeepSeek leaks its internal DSML tool syntax into the reply text:
-  //   <|DSML| invoke name="x"> <|DSML| parameter name="k" ...>v<|/DSML| parameter> ...
-  // Parse it by structure, not by the marker characters, which vary.
-  const dsml = parseDsml(raw)
-  if (dsml.length > 0) return dsml
-
   if (blocks.length === 0) blocks.push(raw)
 
   for (const block of blocks) {
@@ -71,40 +63,6 @@ function extractCalls(raw) {
     if (calls.length > 0) return calls
   }
   return []
-}
-
-function parseDsml(raw) {
-  const text = String(raw || '')
-  if (!/invoke\s+name=/i.test(text)) return []
-  const calls = []
-  const invokeRe = /invoke\s+name="([^"]+)"\s*>([\s\S]*?)(?:<\/[^>]*?invoke\s*>|$)/gi
-  let match
-  while ((match = invokeRe.exec(text)) !== null) {
-    const name = match[1]
-    const body = match[2] || ''
-    const args = {}
-    const paramRe = /parameter\s+name="([^"]+)"([^>]*)>([\s\S]*?)(?:<\/[^>]*?parameter\s*>|$)/gi
-    let param
-    while ((param = paramRe.exec(body)) !== null) {
-      const key = param[1]
-      const attrs = param[2] || ''
-      const rawValue = (param[3] || '').trim()
-      const isString = /string\s*=\s*"true"/i.test(attrs)
-      args[key] = isString ? rawValue : coerce(rawValue)
-    }
-    calls.push({ name, arguments: args })
-  }
-  return calls
-}
-
-function coerce(value) {
-  const trimmed = String(value).trim()
-  if (trimmed === 'true') return true
-  if (trimmed === 'false') return false
-  if (trimmed === 'null') return null
-  if (/^-?\d+(\.\d+)?$/.test(trimmed)) return Number(trimmed)
-  const parsed = tryJson(trimmed)
-  return parsed ?? trimmed
 }
 
 function sliceBetween(raw, open, close) {
